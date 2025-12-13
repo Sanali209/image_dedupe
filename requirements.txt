@@ -1,0 +1,6 @@
+PySide6
+imagehash
+numpy
+pillow
+loguru
+pyinstaller
