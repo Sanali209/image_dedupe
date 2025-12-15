@@ -1,9 +1,10 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
-                                 QListWidget, QFileDialog, QLabel, QGroupBox, QSpinBox)
+                                 QListWidget, QFileDialog, QLabel, QGroupBox, QDoubleSpinBox, QComboBox, QMessageBox)
 from PySide6.QtCore import Signal
+from loguru import logger
 
 class ScanSetupWidget(QWidget):
-    start_scan = Signal(list, int) # emits list of root paths, threshold
+    start_scan = Signal(list, str, float) # emits root paths, engine_type, threshold
 
     def __init__(self, db_manager):
         super().__init__()
@@ -29,14 +30,32 @@ class ScanSetupWidget(QWidget):
         
         self.layout.addWidget(group)
         
-        # Threshold Settings
+        # Scan Settings Group
         thresh_group = QGroupBox("Scan Settings")
-        t_layout = QHBoxLayout()
-        t_layout.addWidget(QLabel("Similarity Threshold (0-20, higher = loosely similar):"))
-        self.spin_thresh = QSpinBox()
+        t_layout = QVBoxLayout()
+        
+        # Engine Selection
+        row_engine = QHBoxLayout()
+        row_engine.addWidget(QLabel("Detection Engine:"))
+        self.combo_engine = QComboBox()
+        self.combo_engine.addItems(["Standard (pHash)", "AI - CLIP", "AI - BLIP", "AI - MobileNet"])
+        self.combo_engine.currentIndexChanged.connect(self.on_engine_changed)
+        row_engine.addWidget(self.combo_engine)
+        t_layout.addLayout(row_engine)
+        
+        # Threshold
+        row_thresh = QHBoxLayout()
+        self.lbl_thresh = QLabel("Similarity Threshold (0-50):")
+        row_thresh.addWidget(self.lbl_thresh)
+        
+        self.spin_thresh = QDoubleSpinBox()
         self.spin_thresh.setRange(0, 50)
         self.spin_thresh.setValue(5)
-        t_layout.addWidget(self.spin_thresh)
+        self.spin_thresh.setSingleStep(1)
+        # self.spin_thresh.setDecimals(2) # Default is 2
+        row_thresh.addWidget(self.spin_thresh)
+        t_layout.addLayout(row_thresh)
+        
         thresh_group.setLayout(t_layout)
         self.layout.addWidget(thresh_group)
         
@@ -66,11 +85,32 @@ class ScanSetupWidget(QWidget):
         for item in self.path_list.selectedItems():
             self.path_list.takeItem(self.path_list.row(item))
 
+    def on_engine_changed(self, index):
+        # 0 = pHash, 1 = CLIP, 2 = BLIP, 3 = MobileNet
+        if index == 0:
+            # pHash
+            self.lbl_thresh.setText("Similarity Threshold (0-50, int):")
+            self.spin_thresh.setRange(0, 50)
+            self.spin_thresh.setSingleStep(1)
+            self.spin_thresh.setValue(5)
+            self.spin_thresh.setDecimals(0)
+        else:
+            # AI (CLIP/BLIP) - Cosine Distance
+            # 0.0 = exact, 0.2 = similar
+            self.lbl_thresh.setText("Cosine Distance (0.0 - 1.0, lower is stricter):")
+            self.spin_thresh.setRange(0.0, 1.0)
+            self.spin_thresh.setSingleStep(0.05)
+            self.spin_thresh.setValue(0.1) # Default 0.1
+            self.spin_thresh.setDecimals(3)
+
     def on_start(self):
         roots = [self.path_list.item(i).text() for i in range(self.path_list.count())]
-        # Save to DB
-        # First clear old? Or just upsert?
-        # Let's simple sync: remove all, add all.
+        
+        if not roots:
+            QMessageBox.warning(self, "No Folder Selected", "Please add at least one folder to scan.")
+            return
+        
+        # Save to DB (Sync)
         existing = set(self.db.get_scanned_paths())
         current = set(roots)
         
@@ -79,7 +119,17 @@ class ScanSetupWidget(QWidget):
         for p in current - existing:
             self.db.add_scanned_path(p)
             
-        self.start_scan.emit(roots, self.spin_thresh.value())
+        # Determine engine type string
+        idx = self.combo_engine.currentIndex()
+        if idx == 0: engine = 'phash'
+        elif idx == 1: engine = 'clip'
+        elif idx == 2: engine = 'blip'
+        else: engine = 'mobilenet'
+        
+        thresh = self.spin_thresh.value()
+        
+        logger.info(f"Starting scan with Engine: {engine}, Threshold: {thresh}")
+        self.start_scan.emit(roots, engine, thresh)
 
     def load_paths(self):
         paths = self.db.get_scanned_paths()

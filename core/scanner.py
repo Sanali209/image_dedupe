@@ -1,54 +1,44 @@
 import os
-import imagehash
-from PIL import Image
-import multiprocessing
 from PySide6.QtCore import QObject, Signal, QThread
 from .database import DatabaseManager
+from .deduper import Deduper
 from loguru import logger
-
-def calculate_hash(file_path):
-    """Worker function to calculate hash."""
-    try:
-        # Use simple phash
-        with Image.open(file_path) as img:
-            # Handle EXIF rotation if necessary, but imagehash might not strictly need it for comparison?
-            # Actually, rotation affects hash.
-            # For speed, we might skip full exif handling if not critical, but let's be safe.
-             # pHash is robust to some scaling/minor edits, but rotation is a major change.
-            hash_val = imagehash.phash(img)
-            # Store hash as hex string to avoid SQLite integer overflow
-            hash_str = str(hash_val)
-            
-            # Get metadata
-            stat = os.stat(file_path)
-            size = stat.st_size
-            mtime = stat.st_mtime
-            width, height = img.size
-            
-            return file_path, hash_str, size, width, height, mtime, None
-    except Exception as e:
-        return file_path, None, 0, 0, 0, 0, str(e)
 
 class ScanWorker(QThread):
     progress = Signal(int, int) # current, total
-    file_processed = Signal(str) # path
+    file_processed = Signal(str) # path (unused but kept for API compat)
     finished_scan = Signal()
     error_occurred = Signal(str)
 
-    def __init__(self, roots, db_path):
+    scan_results_ready = Signal(list) 
+
+    def __init__(self, roots, db_path, engine_type='phash', threshold=5):
         super().__init__()
         self.roots = roots
         self.db_path = db_path
+        self.engine_type = engine_type
+        self.threshold = threshold
         self.db_manager = None
+        self.deduper = None
         self.stop_requested = False
 
     def run(self):
         # Create a thread-local DB manager
         self.db_manager = DatabaseManager(self.db_path)
+        self.deduper = Deduper(self.db_manager)
+        
+        # Initialize Engine
+        try:
+            self.deduper.set_engine(self.engine_type)
+        except Exception as e:
+            logger.error(f"Failed to initialize engine {self.engine_type}: {e}")
+            self.finished_scan.emit()
+            return
         
         files_to_scan = []
         
         # 1. Discovery Phase
+        logger.info("ScanWorker: Discovering files...")
         for root in self.roots:
             for dirpath, _, filenames in os.walk(root):
                 if self.stop_requested: break
@@ -58,69 +48,40 @@ class ScanWorker(QThread):
                         files_to_scan.append(full_path)
         
         total_files = len(files_to_scan)
-        logger.info(f"Found {total_files} files to check.")
+        logger.info(f"ScanWorker: Found {total_files} files.")
         
         if total_files == 0:
             self.finished_scan.emit()
+            self.db_manager.close()
             return
 
-        # 2. Filter Phase (Check DB)
-        # We process in chunks to check DB efficiently? Or just check one by one?
-        # A batch query would be better, but for simplicity let's check individually or rely on worker result.
-        # Actually better to check DB before spawning worker to save CPU.
-        
-        # Optimization: Get all known files in a dict {path: (mtime, hash)}
-        # This might be heavy for memory if 100k files
-        # Let's iterate.
-        
-        tasks_files = []
-        
-        processed_count = 0
-        
-        # Need to know which files need hashing
-        for idx, path in enumerate(files_to_scan):
-            if self.stop_requested: break
-            
-            try:
-                stat = os.stat(path)
-                mtime = stat.st_mtime
-                row = self.db_manager.get_file_by_path(path)
+        # 2. Indexing Phase (Delegate to Engine)
+        if not self.stop_requested:
+            # We pass a lambda for progress
+            def on_progress(current, total):
+                if self.stop_requested: 
+                    # Engines should check a flag or we force thread termination (bad)
+                    # Engines run in this thread, so we accept they might finish the current batch.
+                    pass
+                self.progress.emit(current, total)
                 
-                if row and row['last_modified'] == mtime and row['phash'] is not None:
-                    # Current
-                    processed_count += 1
-                    self.progress.emit(processed_count, total_files)
-                else:
-                    # Needs hashing
-                    tasks_files.append(path)
-            except OSError:
-                processed_count += 1 # Skip files we can't stat
-        
-        # 3. Processing Phase
-        if tasks_files:
-            logger.info(f"Hashing {len(tasks_files)} new files...")
-            # Use fewer than CPU count to keep UI responsive
-            cpu_count = max(1, multiprocessing.cpu_count() - 1)
+            self.deduper.engine.index_files(files_to_scan, progress_callback=on_progress)
             
-            with multiprocessing.Pool(processes=cpu_count) as pool:
-                # Use imap_unordered for responsiveness
-                for result in pool.imap_unordered(calculate_hash, tasks_files):
-                    if self.stop_requested: 
-                        pool.terminate()
-                        break
-                        
-                    path, hash_val, size, w, h, mtime, err = result
-                    
-                    if hash_val is not None:
-                        self.db_manager.upsert_file(path, hash_val, size, w, h, mtime)
-                    elif err:
-                        logger.error(f"Error hashing {path}: {err}")
-                    
-                    processed_count += 1
-                    self.progress.emit(processed_count, total_files)
-                    self.file_processed.emit(path)
-
-
+            # 3. Matching Phase (Generate and Save Matches)
+            if not self.stop_requested:
+                 logger.info("ScanWorker: Running match detection...")
+                 # We need file objects with paths. The Engine.find_duplicates expects list of files (dicts/rows)
+                 # But we only have paths here.
+                 # Actually, Deduper.find_duplicates handles this? 
+                 # No, Deduper.find_duplicates takes `files`.
+                 # We should reload files from DB to ensure format is correct.
+                 # We rely on the Engine to load files if None is passed (which Deduper passes)
+                 
+                 # Optimization: Return results to avoid re-calculation in UI
+                 results = self.deduper.find_duplicates(threshold=self.threshold, root_paths=self.roots, progress_callback=on_progress)
+                 self.scan_results_ready.emit(results)
+                 logger.info("ScanWorker: Match detection complete.")
+            
         self.db_manager.close()
         self.finished_scan.emit()
 

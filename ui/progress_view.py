@@ -6,7 +6,7 @@ from core.logger import qt_log_handler
 from loguru import logger
 
 class ProgressWidget(QWidget):
-    scan_finished = Signal()
+    scan_finished = Signal(object)
 
     def __init__(self, db_manager):
         super().__init__()
@@ -41,16 +41,18 @@ class ProgressWidget(QWidget):
         cursor.movePosition(QTextCursor.End)
         self.log_view.setTextCursor(cursor)
 
-    def start_scan(self, roots):
-        self.status_label.setText("Scanning...")
+    def start_scan(self, roots, engine='phash', threshold=5):
+        self.status_label.setText(f"Scanning with {engine}...")
         self.progress_bar.setValue(0)
         self.btn_cancel.setEnabled(True)
         
-        self.worker = ScanWorker(roots, self.db.db_path)
+        self.worker = ScanWorker(roots, self.db.db_path, engine, threshold)
         self.worker.progress.connect(self.update_progress)
         self.worker.file_processed.connect(self.update_file_label)
         self.worker.finished_scan.connect(self.on_finished)
+        self.worker.scan_results_ready.connect(self.on_results_ready)
         self.worker.start()
+        self.scan_results = None
 
     def update_progress(self, current, total):
         self.progress_bar.setMaximum(total)
@@ -61,10 +63,14 @@ class ProgressWidget(QWidget):
         # Optional: showing fast changing text might lag UI
         pass
 
+    def on_results_ready(self, results):
+        self.scan_results = results
+
     def on_finished(self):
         self.worker.deleteLater()
         self.worker = None
-        self.scan_finished.emit()
+        results = getattr(self, 'scan_results', None)
+        self.scan_finished.emit(results)
 
     def cancel_scan(self):
         if self.worker:

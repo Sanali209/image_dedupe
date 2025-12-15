@@ -4,3 +4,8 @@ numpy
 pillow
 loguru
 pyinstaller
+chromadb
+sentence-transformers
+transformers
+torch
+torchvision
