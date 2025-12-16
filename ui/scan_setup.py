@@ -4,11 +4,12 @@ from PySide6.QtCore import Signal
 from loguru import logger
 
 class ScanSetupWidget(QWidget):
-    start_scan = Signal(list, str, float) # emits root paths, engine_type, threshold
+    start_scan = Signal() # No args, session is SSOT
 
-    def __init__(self, db_manager):
+    def __init__(self, session):
         super().__init__()
-        self.db = db_manager
+        self.session = session
+        self.db = session.db # Convenience
         self.layout = QVBoxLayout(self)
         
         # Folder List
@@ -70,8 +71,8 @@ class ScanSetupWidget(QWidget):
         self.btn_clear.clicked.connect(self.path_list.clear)
         self.btn_start.clicked.connect(self.on_start)
         
-        # Load saved paths
-        self.load_paths()
+        # Load saved paths from session
+        self.load_from_session()
 
     def add_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Folder")
@@ -87,21 +88,17 @@ class ScanSetupWidget(QWidget):
 
     def on_engine_changed(self, index):
         # 0 = pHash, 1 = CLIP, 2 = BLIP, 3 = MobileNet
-        if index == 0:
-            # pHash
-            self.lbl_thresh.setText("Similarity Threshold (0-50, int):")
-            self.spin_thresh.setRange(0, 50)
-            self.spin_thresh.setSingleStep(1)
-            self.spin_thresh.setValue(5)
-            self.spin_thresh.setDecimals(0)
-        else:
-            # AI (CLIP/BLIP) - Cosine Distance
-            # 0.0 = exact, 0.2 = similar
-            self.lbl_thresh.setText("Cosine Distance (0.0 - 1.0, lower is stricter):")
-            self.spin_thresh.setRange(0.0, 1.0)
-            self.spin_thresh.setSingleStep(0.05)
-            self.spin_thresh.setValue(0.1) # Default 0.1
-            self.spin_thresh.setDecimals(3)
+        engine_map = {0: 'phash', 1: 'clip', 2: 'blip', 3: 'mobilenet'}
+        engine = engine_map.get(index, 'phash')
+        
+        # Use session helper
+        defaults = self.session.get_engine_threshold_defaults(engine)
+        
+        self.lbl_thresh.setText(defaults['label'])
+        self.spin_thresh.setRange(defaults['min'], defaults['max'])
+        self.spin_thresh.setSingleStep(defaults['step'])
+        self.spin_thresh.setDecimals(defaults['decimals'])
+        self.spin_thresh.setValue(defaults['default'])
 
     def on_start(self):
         roots = [self.path_list.item(i).text() for i in range(self.path_list.count())]
@@ -110,27 +107,23 @@ class ScanSetupWidget(QWidget):
             QMessageBox.warning(self, "No Folder Selected", "Please add at least one folder to scan.")
             return
         
-        # Save to DB (Sync)
-        existing = set(self.db.get_scanned_paths())
-        current = set(roots)
+        # Update Session
+        self.session.roots = roots
         
-        for p in existing - current:
-            self.db.remove_scanned_path(p)
-        for p in current - existing:
-            self.db.add_scanned_path(p)
-            
-        # Determine engine type string
         idx = self.combo_engine.currentIndex()
         if idx == 0: engine = 'phash'
         elif idx == 1: engine = 'clip'
         elif idx == 2: engine = 'blip'
         else: engine = 'mobilenet'
         
-        thresh = self.spin_thresh.value()
+        self.session.engine = engine
+        self.session.threshold = self.spin_thresh.value()
         
-        logger.info(f"Starting scan with Engine: {engine}, Threshold: {thresh}")
-        self.start_scan.emit(roots, engine, thresh)
+        logger.info(f"Starting scan with Engine: {engine}, Threshold: {self.session.threshold}")
+        self.start_scan.emit()
 
-    def load_paths(self):
-        paths = self.db.get_scanned_paths()
+    def load_from_session(self):
+        paths = self.session.roots
         self.path_list.addItems(paths)
+        # Could also restore engine/thresh last used if we saved it
+

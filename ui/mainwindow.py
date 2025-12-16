@@ -1,8 +1,8 @@
 from PySide6.QtWidgets import (QMainWindow, QStackedWidget, QWidget, QVBoxLayout, QToolBar, QMessageBox, QStatusBar, QMenu)
 from PySide6.QtGui import QAction, QIcon
 from core.database import DatabaseManager
+from core.scan_session import ScanSession
 from .scan_setup import ScanSetupWidget
-from .progress_view import ProgressWidget
 from .progress_view import ProgressWidget
 from .results_view import ResultsWidget
 from .cluster_view import ClusterViewWidget
@@ -14,27 +14,23 @@ class MainWindow(QMainWindow):
         self.resize(1000, 700)
         
         self.db = DatabaseManager()
+        self.session = ScanSession(self.db)
         
         # Central Stack
         self.stack = QStackedWidget()
         self.setCentralWidget(self.stack)
         
         # Widgets
-        self.setup_widget = ScanSetupWidget(self.db)
-        self.progress_widget = ProgressWidget(self.db)
-        self.results_widget = ResultsWidget(self.db)
-        self.cluster_widget = ClusterViewWidget(self.db)
+        self.setup_widget = ScanSetupWidget(self.session)
+        self.progress_widget = ProgressWidget(self.session)
+        self.results_widget = ResultsWidget(self.session)
+        self.cluster_widget = ClusterViewWidget(self.session)
         
         self.stack.addWidget(self.setup_widget)     # Index 0
         self.stack.addWidget(self.progress_widget)  # Index 1
         self.stack.addWidget(self.results_widget)   # Index 2
         self.stack.addWidget(self.cluster_widget)   # Index 3
         
-        self.current_threshold = 5
-        self.current_engine = 'phash'
-        self.show_ignored = False
-        self.current_roots = []
-
         # Signals
         self.setup_widget.start_scan.connect(self.start_scan_process)
         self.progress_widget.scan_finished.connect(self.show_results)
@@ -79,20 +75,18 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.act_cluster_view)
 
     def toggle_ignored(self, checked):
-        self.show_ignored = checked
+        self.session.include_ignored = checked
         if self.stack.currentIndex() == 2:
             self.show_results()
 
-    def start_scan_process(self, roots, engine, threshold):
-        self.current_roots = roots
-        self.current_engine = engine
-        self.current_threshold = threshold
+    def start_scan_process(self):
+        # Session already updated by SetupWidget before emit
         self.stack.setCurrentIndex(1)
-        self.progress_widget.start_scan(roots, engine, threshold)
+        self.progress_widget.start_scan()
 
     def show_results(self, existing_results=None):
-        # Result loading happens here (includes deduplication which logs progress)
-        self.results_widget.load_results(self.current_threshold, self.show_ignored, self.current_roots, self.current_engine, existing_results=existing_results)
+        # Result loading happens here
+        self.results_widget.load_results(existing_results=existing_results)
         
         self.stack.setCurrentIndex(2)
         self.statusBar.showMessage("Scan complete.")
@@ -100,3 +94,4 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         self.db.close()
         event.accept()
+

@@ -113,10 +113,11 @@ class ClusterImageList(QListWidget):
             super().dropEvent(event)
 
 class ClusterViewWidget(QWidget):
-    def __init__(self, db_manager):
+    def __init__(self, session):
         super().__init__()
-        self.db = db_manager
-        self.deduper = Deduper(db_manager)
+        self.session = session
+        self.db = session.db
+        self.deduper = Deduper(self.db)
         self.clusters = [] 
         
         # Initialize Thumbnail Manager
@@ -129,7 +130,6 @@ class ClusterViewWidget(QWidget):
         layout = QVBoxLayout(self)
         
         # --- Top: Configuration ---
-        # We use a horizontal layout for the top panel, split into Standard and AI config
         config_panel = QHBoxLayout()
         
         # Standard Config Group
@@ -155,7 +155,6 @@ class ClusterViewWidget(QWidget):
         self.chk_crop = QCheckBox("Similar Crop")
         self.chk_style = QCheckBox("Similar Style")
         self.chk_other = QCheckBox("Other")
-        # Saved AI matches are now implicit
         
         row_chk2.addWidget(self.chk_crop)
         row_chk2.addWidget(self.chk_style)
@@ -278,6 +277,13 @@ class ClusterViewWidget(QWidget):
 
     def detect_clusters(self):
         logger.info("UI: detect_clusters button clicked.")
+        
+        # Update Session with local criteria overrides if needed
+        # Or just pass simple dict to deduper. 
+        # But for SSOT, we should update session properties.
+        # For now, we reuse the existing pattern of passing a criteria dict to deduper,
+        # but better to pull 'roots' from session.
+        
         criteria = {
             'exact_hash': self.chk_exact.isChecked(),
             'ai_match': self.chk_ai_match.isChecked(),
@@ -291,11 +297,14 @@ class ClusterViewWidget(QWidget):
             'ai_threshold': self.spin_ai_thresh.value()
         }
         
+        # Enforce SSOT roots
+        if self.session.roots:
+            criteria['roots'] = self.session.roots
+        
         if criteria['ai_similarity']:
             engine_name = self.combo_ai_engine.currentText().lower()
             try:
                 QCoreApplication.processEvents() # Flush UI
-                # We should warn user this might be slow
                 self.deduper.set_engine(engine_name)
             except Exception as e:
                 QMessageBox.critical(self, "AI Engine Error", str(e))

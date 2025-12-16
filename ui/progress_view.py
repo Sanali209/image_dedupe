@@ -8,9 +8,10 @@ from loguru import logger
 class ProgressWidget(QWidget):
     scan_finished = Signal(object)
 
-    def __init__(self, db_manager):
+    def __init__(self, session):
         super().__init__()
-        self.db = db_manager
+        self.session = session
+        self.db = session.db
         self.layout = QVBoxLayout(self)
         
         self.status_label = QLabel("Initializing...")
@@ -41,7 +42,12 @@ class ProgressWidget(QWidget):
         cursor.movePosition(QTextCursor.End)
         self.log_view.setTextCursor(cursor)
 
-    def start_scan(self, roots, engine='phash', threshold=5):
+    def start_scan(self):
+        # Read from Session
+        engine = self.session.engine
+        threshold = self.session.threshold
+        roots = self.session.roots
+        
         self.status_label.setText(f"Scanning with {engine}...")
         self.progress_bar.setValue(0)
         self.btn_cancel.setEnabled(True)

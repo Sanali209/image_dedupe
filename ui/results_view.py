@@ -405,10 +405,11 @@ class ComparisonWidget(QWidget):
             label.setText("Invalid Image")
 
 class ResultsWidget(QWidget):
-    def __init__(self, db_manager):
+    def __init__(self, session):
         super().__init__()
-        self.db = db_manager
-        self.deduper = Deduper(db_manager)
+        self.session = session
+        self.db = session.db
+        self.deduper = Deduper(self.db)
         
         self.layout = QVBoxLayout(self)
         
@@ -439,10 +440,11 @@ class ResultsWidget(QWidget):
         self.current_group_idx = -1
         self.right_index = 1
 
-    def load_results(self, threshold=5, include_ignored=False, root_paths=None, engine_type='phash', existing_results=None):
-        self.include_ignored = include_ignored
+    def load_results(self, existing_results=None):
+        self.include_ignored = self.session.include_ignored
         
         # Initialize engine
+        engine_type = self.session.engine
         try:
             self.deduper.set_engine(engine_type)
         except Exception as e:
@@ -452,7 +454,11 @@ class ResultsWidget(QWidget):
         if existing_results is not None:
              self.groups = existing_results
         else:
-             self.groups = self.deduper.find_duplicates(threshold, include_ignored, root_paths)
+             self.groups = self.deduper.find_duplicates(
+                 self.session.threshold, 
+                 self.session.include_ignored, 
+                 self.session.roots
+             )
         self.group_list.clear()
         
         # Incremental Loading to prevent GUI freeze
