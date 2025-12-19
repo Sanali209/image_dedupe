@@ -9,3 +9,5 @@ sentence-transformers
 transformers
 torch
 torchvision
+humanize
+pydantic

@@ -143,19 +143,70 @@ class PHashEngine(BaseEngine):
         # Query
         total = len(hash_groups)
         log_interval = max(1, total // 10)
+        
+        found_pairs = []
 
         for i, (h, _) in enumerate(hash_groups):
             matches = tree.query(h, int(threshold))
             for match_h, dist in matches:
                 if dist > 0:
-                    if include_ignored or not self.db_manager.is_ignored(h, match_h):
+                    # Check if ignored before grouping
+                    is_ignored = self.db_manager.is_ignored(h, match_h)
+                    
+                    if include_ignored or not is_ignored:
                         union(h, match_h)
+                    
+                    # Store pair for persistence (if not already ignored/handled)
+                    # We want to capture it even if ignored, to update distance if needed?
+                    # But add_ignored_pairs_batch(overwrite=False) won't update if exists.
+                    # That's fine.
+                    h1, h2 = sorted((h, match_h))
+                    found_pairs.append((h1, h2, 'phash_match', dist))
             
             if i % log_interval == 0:
                 logger.info(f"PHash Matching Progress: {i}/{total}")
                 if progress_callback:
                     progress_callback(i, total)
                 QCoreApplication.processEvents()
+        
+        
+        # Persist found pairs to DB (convert hash-based to ID-based)
+        if found_pairs:
+            # Build hash->ID mapping
+            hash_to_ids = defaultdict(list)
+            for f in files:
+                if f['phash']:
+                    hash_to_ids[f['phash']].append(f['id'])
+            
+            # Convert hash pairs to ID pairs
+            from ..models import FileRelation, RelationType
+            id_relations = []
+            for h1, h2, rel_type, dist in found_pairs:
+                ids1 = hash_to_ids.get(h1, [])
+                ids2 = hash_to_ids.get(h2, [])
+                
+                # Create relations for all combinations of IDs
+                for id1 in ids1:
+                    for id2 in ids2:
+                        if id1 != id2:
+                            s1, s2 = sorted((id1, id2))
+                            id_relations.append(FileRelation(
+                                id1=s1,
+                                id2=s2,
+                                relation_type=RelationType.NEW_MATCH,
+                                distance=float(dist)
+                            ))
+            
+            if id_relations:
+                # Remove duplicates
+                unique_relations = list({(r.id1, r.id2): r for r in id_relations}.values())
+                logger.info(f"PHashEngine: Persisting {len(unique_relations)} ID-based pairs to DB...")
+                
+                # Use file_repo instead of db_manager
+                if self.file_repo:
+                    self.file_repo.add_relations_batch(unique_relations, overwrite=False)
+                else:
+                    logger.warning("PHashEngine: file_repo not available, cannot persist relations")
 
         # Reconstruct
         groups = defaultdict(list)

@@ -2,6 +2,7 @@ import os
 from PySide6.QtCore import QObject, Signal, QThread
 from .database import DatabaseManager
 from .deduper import Deduper
+from .scanner_state import ScannerContext
 from loguru import logger
 
 class ScanWorker(QThread):
@@ -24,67 +25,79 @@ class ScanWorker(QThread):
 
     def run(self):
         # Create a thread-local DB manager
+        # Create a thread-local DB manager
         self.db_manager = DatabaseManager(self.db_path)
-        self.deduper = Deduper(self.db_manager)
         
-        # Initialize Engine
+        # Create file_repo if not provided (for thread-local DB access)
+        if not hasattr(self, 'file_repo') or self.file_repo is None:
+            from core.repositories.file_repository import FileRepository
+            self.file_repo = FileRepository(self.db_manager)
+
+        self.deduper = Deduper(self.db_manager, self.file_repo)
+        
+        # Set threshold
+        threshold = getattr(self, 'threshold', 5)
+        
+        # Initialize Engine with threshold
         try:
             self.deduper.set_engine(self.engine_type)
-        except Exception as e:
-            logger.error(f"Failed to initialize engine {self.engine_type}: {e}")
-            self.finished_scan.emit()
-            return
-        
-        files_to_scan = []
-        
-        # 1. Discovery Phase
-        logger.info("ScanWorker: Discovering files...")
-        for root in self.roots:
-            for dirpath, _, filenames in os.walk(root):
-                if self.stop_requested: break
-                for f in filenames:
-                    if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp')):
-                        full_path = os.path.abspath(os.path.join(dirpath, f))
-                        files_to_scan.append(full_path)
-        
-        total_files = len(files_to_scan)
-        logger.info(f"ScanWorker: Found {total_files} files.")
-        
-        if total_files == 0:
-            self.finished_scan.emit()
-            self.db_manager.close()
-            return
+            
+            # 1. Discovery
+            logger.info("ScanWorker: Starting Discovery...")
+            files = []
+            for root in self.roots:
+                for dirpath, _, filenames in os.walk(root):
+                    if self.stop_requested: break
+                    for f in filenames:
+                        if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp')):
+                            files.append(os.path.abspath(os.path.join(dirpath, f)))
+            
+            logger.info(f"ScanWorker: Found {len(files)} files.")
+            self.progress.emit(0, len(files))
+            
+            if self.stop_requested: return
 
-        # 2. Indexing Phase (Delegate to Engine)
-        if not self.stop_requested:
-            # We pass a lambda for progress
-            def on_progress(current, total):
-                if self.stop_requested: 
-                    # Engines should check a flag or we force thread termination (bad)
-                    # Engines run in this thread, so we accept they might finish the current batch.
-                    pass
-                self.progress.emit(current, total)
+            # 2. Indexing
+            logger.info("ScanWorker: Starting Indexing...")
+            def on_progress(curr, total):
+                if self.stop_requested: return
+                self.progress.emit(curr, total)
                 
-            self.deduper.engine.index_files(files_to_scan, progress_callback=on_progress)
+            self.deduper.engine.index_files(files, progress_callback=on_progress)
             
-            # 3. Matching Phase (Generate and Save Matches)
-            if not self.stop_requested:
-                 logger.info("ScanWorker: Running match detection...")
-                 # We need file objects with paths. The Engine.find_duplicates expects list of files (dicts/rows)
-                 # But we only have paths here.
-                 # Actually, Deduper.find_duplicates handles this? 
-                 # No, Deduper.find_duplicates takes `files`.
-                 # We should reload files from DB to ensure format is correct.
-                 # We rely on the Engine to load files if None is passed (which Deduper passes)
-                 
-                 # Optimization: Return results to avoid re-calculation in UI
-                 results = self.deduper.find_duplicates(threshold=self.threshold, root_paths=self.roots, progress_callback=on_progress)
-                 self.scan_results_ready.emit(results)
-                 logger.info("ScanWorker: Match detection complete.")
+            if self.stop_requested: return
+
+            # 3. Matching
+            logger.info("ScanWorker: Starting Matching...")
+            results = self.deduper.find_duplicates(
+                threshold=threshold,
+                roots=self.roots
+            )
             
+            self.scan_results_ready.emit(results)
+            
+        except Exception as e:
+            logger.error(f"Scan error: {e}")
+            self.error_occurred.emit(str(e))
+        finally:
+            self.finished_scan.emit()
+        
+        # State Machine usage attempted to be removed/bypassed in previous steps
+        # self.context.request_start()
+        # But we need event loop for signals? 
+        # Actually our State Machine is currently synchronous in `execute` calls for this demo refactor,
+        # but `ScannerContext` is designed to be event driven.
+        # However, `execute` calls are blocking in the current implementation of `ScannerState`.
+        # So `request_start()` will run until finished.
+        
         self.db_manager.close()
+        
+    def on_context_finished(self):
+        # Signal already emitted?
         self.finished_scan.emit()
 
     def stop(self):
         self.stop_requested = True
+        if hasattr(self, 'context'):
+             self.context.request_stop()
         self.wait()
