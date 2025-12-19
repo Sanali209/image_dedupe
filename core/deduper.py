@@ -1,92 +1,182 @@
+"""
+Deduper Module.
+
+Orchestrates the duplicate detection process by coordinating:
+1.  Engines (Comparison Logic) - e.g., PHash, CLIP.
+2.  Database (Persistence) - Storing results.
+3.  Cluster Services (Graph Logic) - Grouping related files.
+"""
 import os
 from collections import defaultdict
-from .database import DatabaseManager
+from typing import List, Optional, Any, Dict, Union, Callable
+
 from loguru import logger
+from .database import DatabaseManager
 from .engines.phash import PHashEngine
 from .engines.clip import CLIPEngine
 from .engines.blip import BLIPEngine
 from .engines.mobilenet import MobileNetEngine
 from .cluster_services import GraphBuilder, ClusterReconciler
+from core.models import FileRelation, RelationType
 
 class Deduper:
-    def __init__(self, db_manager: DatabaseManager):
+    """
+    Main entry point for duplicate detection and clustering.
+    Facade that simplifies interaction with underlying engines and services.
+    """
+    def __init__(self, db_manager: DatabaseManager, file_repo: Optional[Any] = None):
         self.db_manager = db_manager
-        self.engine = PHashEngine(db_manager)
-        self.graph_builder = GraphBuilder(db_manager)
+        # Allow injection, fallback to db_manager.file_repo if older code (though that fails)
+        # Ideally we require it.
+        self.file_repo = file_repo
+        
+        self.engine = PHashEngine(db_manager, self.file_repo)
+        self.graph_builder = GraphBuilder(db_manager, self.file_repo)
         self.reconciler = ClusterReconciler(db_manager)
         
-    def set_engine(self, engine_type):
+    def set_engine(self, engine_type: str) -> None:
+        """Switch the active comparison engine."""
         if engine_type == 'phash':
-            self.engine = PHashEngine(self.db_manager)
+            self.engine = PHashEngine(self.db_manager, self.file_repo)
         elif engine_type == 'clip':
-            self.engine = CLIPEngine(self.db_manager)
+            self.engine = CLIPEngine(self.db_manager, self.file_repo)
         elif engine_type == 'blip':
-            self.engine = BLIPEngine(self.db_manager)
+            self.engine = BLIPEngine(self.db_manager, self.file_repo)
         elif engine_type == 'mobilenet':
-            self.engine = MobileNetEngine(self.db_manager)
+            self.engine = MobileNetEngine(self.db_manager, self.file_repo)
         else:
             logger.warning(f"Unknown engine type: {engine_type}, defaulting to pHash")
-            self.engine = PHashEngine(self.db_manager)
+            self.engine = PHashEngine(self.db_manager, self.file_repo)
             
         self.engine.initialize()
 
-    def find_duplicates(self, threshold=5, include_ignored=False, root_paths=None, progress_callback=None):
+    def find_duplicates(self, threshold: float = 5, include_ignored: bool = False, 
+                       roots: Optional[List[str]] = None, 
+                       progress_callback: Optional[Callable] = None) -> List[FileRelation]:
         """
-        Find duplicate groups using the active engine.
-        Returns a list of lists: [[dict(file_row), ...], group2, ...]
+        Execute duplicate detection using the active engine.
+        
+        Args:
+            threshold: Similarity threshold (distance).
+            include_ignored: Whether to include previously ignored pairs.
+            roots: List of root directories to scan (None = all).
+            progress_callback: Function to report progress.
+            
+        Returns:
+            List of FileRelation objects representing matches.
         """
-        groups = self.engine.find_duplicates(
+        if roots is None: roots = []
+        
+        # Engine execution
+        results = self.engine.find_duplicates(
             files=None, 
             threshold=threshold, 
-            root_paths=root_paths, 
+            root_paths=roots, 
             include_ignored=include_ignored,
             progress_callback=progress_callback
         )
         
-        # Persist AI matches if it's an AI engine
-        is_ai = isinstance(self.engine, (CLIPEngine, BLIPEngine, MobileNetEngine))
-        if is_ai and groups:
-            self.save_ai_matches(groups)
-            
-        return groups
+        final_relations: List[FileRelation] = []
+        
+        # Normalize Output to List[FileRelation]
+        if isinstance(results, list):
+             if not results: return []
+             
+             first = results[0]
+             if isinstance(first, FileRelation):
+                 final_relations = results
+             elif isinstance(first, list) or isinstance(first, set):
+                 # Legacy Group Handling (Convert Groups to Relations)
+                 import itertools
+                 import sqlite3
+                 
+                 def get_id(item):
+                     """Helper to extract ID from dict, Row, or Object."""
+                     if isinstance(item, (dict, sqlite3.Row)):
+                         return item['id']
+                     return getattr(item, 'id', None)
 
-    def save_ai_matches(self, groups):
+                 for group in results:
+                     if len(group) < 2: continue
+                     # Generate full mesh of relations for the group
+                     for left, right in itertools.combinations(group, 2):
+                         id1 = get_id(left)
+                         id2 = get_id(right)
+                         
+                         if id1 is None or id2 is None:
+                             logger.warning(f"Could not extract IDs from group items: {left}, {right}")
+                             continue
+                         
+                         rel = FileRelation(
+                             id1=id1,
+                             id2=id2,
+                             relation_type=RelationType.NEW_MATCH,
+                             distance=0.0 
+                         )
+                         final_relations.append(rel)
+        
+        
+        # Persist all found 'new_match' relations (overwrite=False protects existing)
+        self.save_relations(final_relations)
+        
+        # Reconcile memory objects with DB state to reflect user decisions
+        # This fixes the issue where pairs reappear as 'New Match' after scan even if annotated
+        reconciled = []
+        for rel in final_relations:
+            # Check DB for actual status
+            # We can use file_repo to get relation (or verify via db_manager)
+            # Efficiently we should have bulk fetched, but loop is okay for typical result counts
+            # or we assume 'is_ignored' check logic
+            
+            # Using low-level check
+            # If DB has a specific relation, we prefer that over "NEW_MATCH"
+            existing_type = self.db_manager.get_ignore_reason(rel.id1, rel.id2)
+            
+            if existing_type:
+                # Update the object to match DB
+                try:
+                    rel.relation_type = RelationType(existing_type)
+                except:
+                    pass
+            
+            # Filter if needed
+            if not include_ignored:
+                # If handled (non-new_match), skip
+                # Note: 'new_match' is considered 'pending' (visible)
+                if rel.relation_type != RelationType.NEW_MATCH:
+                    continue
+            
+            reconciled.append(rel)
+        
+        final_relations = reconciled
+            
+        return final_relations
+
+    def save_relations(self, relations: List[FileRelation]) -> None:
         """
-        Persist AI-found groups to DB as 'ai_match' pairs.
-        Optimization: Uses Star Topology (Hub-and-Spoke) instead of Full Mesh.
+        Persist relations to DB.
+        
+        Args:
+            relations: List of FileRelation objects.
         """
-        if not groups: return
+        if not relations: return
+        
+        if not self.file_repo:
+             logger.error("Deduper.save_relations: file_repo is not initialized.")
+             return
 
-        logger.info(f"Persisting AI matches for {len(groups)} groups...")
+        logger.info(f"Persisting {len(relations)} relations to database...")
+        self.file_repo.add_relations_batch(relations, overwrite=False)
         
-        count = 0
-        pairs = []
-        for group in groups:
-            # group is list of file rows (sqlite3.Row)
-            ids = []
-            for f in group:
-                val = f['phash'] if f['phash'] else f['path']
-                if val: ids.append(val)
-            
-            ids = sorted(list(set(ids))) # Unique identifiers
-            if len(ids) < 2: continue
-            
-            # Star Topology: Connect first (hub) to all others
-            hub = ids[0]
-            for i in range(1, len(ids)):
-                pairs.append((hub, ids[i], 'ai_match'))
-                count += 1
-        
-        if pairs:
-            # Do NOT overwrite existing classifications
-            self.db_manager.add_ignored_pairs_batch(pairs, overwrite=False)
-        
-        if count > 0:
-            logger.info(f"Persisted {count} AI match pairs to database (Optimized).")
+    # Legacy alias
+    save_ai_matches = save_relations
 
-    def process_clusters(self, criteria):
+    def process_clusters(self, criteria: Dict[str, Any]) -> List[Any]:
         """
         Orchestrate Cluster Persistence via Services.
+        
+        Args:
+            criteria: Dictionary of clustering options (roots, threshold, etc).
         """
         # 1. Prepare Data
         scanned_roots = self.db_manager.get_scanned_paths()
@@ -102,18 +192,12 @@ class Deduper:
              
         # 2. Run On-The-Fly AI if requested (Pre-processing step)
         if criteria.get('ai_similarity', False):
-             # We should run AI and save matches first
-             # This essentially calls find_duplicates and save_ai_matches
              logger.info("Running On-The-Fly AI for clustering...")
              thresh = criteria.get('ai_threshold', 0.1)
-             # Note: find_duplicates automatically calls save_ai_matches if it's an AI engine
-             self.find_duplicates(threshold=thresh, root_paths=criteria.get('roots'))
+             self.find_duplicates(threshold=thresh, roots=criteria.get('roots'))
         
         # 3. Build Graph
-        # Note: GraphBuilder logic was slightly simplified regarding on-the-fly 'ai_similarity'.
-        # By calling find_duplicates above, we persisted the edges to DB.
-        # Now GraphBuilder will pick them up from DB (edge_stats['db']).
-        
+        # GraphBuilder picks up edges from DB
         fresh_components = self.graph_builder.build_graph_and_find_components(files, criteria)
         
         # 4. Reconcile

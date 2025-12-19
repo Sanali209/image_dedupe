@@ -3,10 +3,12 @@ import os
 from loguru import logger
 from PIL import Image
 from ..vector_db import VectorStore
+from .abstract import AbstractDedupeEngine
 
-class BaseEngine(abc.ABC):
-    def __init__(self, db_manager):
+class BaseEngine(AbstractDedupeEngine):
+    def __init__(self, db_manager, file_repo=None):
         self.db_manager = db_manager
+        self.file_repo = file_repo
 
     @abc.abstractmethod
     def initialize(self):
@@ -42,8 +44,8 @@ class BaseAIEngine(BaseEngine):
     """
     Base class for AI-based engines (BLIP, CLIP, MobileNet) to reduce duplication.
     """
-    def __init__(self, db_manager):
-        super().__init__(db_manager)
+    def __init__(self, db_manager, file_repo=None):
+        super().__init__(db_manager, file_repo)
         self.model = None
         self.vector_db = VectorStore()
         self.collection_name = None  # Must be set by subclass (e.g. 'blip_embeddings')
@@ -186,6 +188,24 @@ class BaseAIEngine(BaseEngine):
         total = len(valid_files)
         log_interval = max(1, total // 20)
 
+        found_pairs = []
+
+        # Retrieve all IDs for efficient lookup
+        # We need to map path -> ID
+        # This is slow if we do it one by one.
+        # Ideally we pre-fetch map of all files in roots?
+        # Or assume file_repo scan populated them.
+        
+        # Since we are iterating valid_files (paths), let's build a map
+        path_to_id = {}
+        # TODO: Improve this N+1 query performance later or batch fetch
+        # For now, let's fetch ID for the current batch or just use slow lookup?
+        # Actually, valid_files matches 'roots'.
+        # Let's fetch all IDs in roots once.
+        
+        all_files_in_roots = self.file_repo.get_files_in_roots(root_paths)
+        path_to_id = {f['path']: f['id'] for f in all_files_in_roots}
+        
         for i, path in enumerate(valid_files):
             data = self.vector_db.collections[self.collection_name].get(ids=[path], include=['embeddings'])
             if not data or data['embeddings'] is None or len(data['embeddings']) == 0: continue
@@ -199,30 +219,56 @@ class BaseAIEngine(BaseEngine):
             ids = results['ids'][0]
             dists = results['distances'][0]
             
+            left_id = path_to_id.get(path)
+            if not left_id: continue 
+
             for match_path, dist in zip(ids, dists):
                 if match_path == path: continue
                 
+                right_id = path_to_id.get(match_path)
+                if not right_id: continue
+                
                 # Check threshold
                 if dist <= float(threshold):
+                    
+                    # Use Pydantic Model
+                    from core.models import FileRelation, RelationType
+                    
+                    # Store pair
+                    rel = FileRelation(
+                        id1=left_id,
+                        id2=right_id,
+                        relation_type=RelationType.NEW_MATCH,
+                        distance=float(dist)
+                    )
+                    found_pairs.append(rel)
+                
                     if include_ignored:
                         if match_path in parent:
                             union(path, match_path)
                     else:
-                        h1 = path_to_hash.get(path)
-                        h2 = path_to_hash.get(match_path)
-                        
-                        id1 = h1 if h1 else path
-                        id2 = h2 if h2 else match_path
-                        
-                        if self.db_manager.is_ignored(id1, id2):
+                        if self.db_manager.is_ignored(left_id, right_id):
                             continue
                         
                         if match_path in parent:
                             union(path, match_path)
-                    
+                
             if i % log_interval == 0:
                 logger.info(f"{self.engine_name} Matching Progress: {i}/{total}")
                 if progress_callback: progress_callback(i, total)
+
+        # Persist found pairs
+        if found_pairs:
+             # Efficiently: unique-ify the list using a dict keyed by IDs
+            unique_map = {}
+            for r in found_pairs:
+                key = (r.id1, r.id2)
+                if key not in unique_map:
+                    unique_map[key] = r
+            
+            unique_pairs = list(unique_map.values())
+            logger.info(f"{self.engine_name}: Persisting {len(unique_pairs)} match pairs to DB...")
+            self.file_repo.add_relations_batch(unique_pairs, overwrite=False)
 
         from collections import defaultdict
         groups = defaultdict(list)

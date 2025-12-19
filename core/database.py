@@ -1,6 +1,7 @@
 import sqlite3
 import os
 from datetime import datetime
+from loguru import logger
 
 class DatabaseManager:
     def __init__(self, db_path="dedup_app.db"):
@@ -43,15 +44,6 @@ class DatabaseManager:
                 last_modified REAL
             )
         ''')
-        
-        # Ignored pairs (false positives)
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS ignored_pairs (
-                hash1 TEXT NOT NULL,
-                hash2 TEXT NOT NULL,
-                UNIQUE(hash1, hash2)
-            )
-        ''')
 
         # Scanned paths (configuration)
         cursor.execute('''
@@ -70,25 +62,31 @@ class DatabaseManager:
             )
         ''')
 
-        # Cluster Members Table
+        # Cluster Members Table (no phash column - cleaned up)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS cluster_members (
                 cluster_id INTEGER,
                 file_path TEXT NOT NULL,
-                phash TEXT,
                 FOREIGN KEY(cluster_id) REFERENCES clusters(id) ON DELETE CASCADE,
                 UNIQUE(cluster_id, file_path)
             )
         ''')
-
-        # Schema Migration: Add reason column if not exists
-        try:
-            cursor.execute("ALTER TABLE ignored_pairs ADD COLUMN reason TEXT")
-        except sqlite3.OperationalError:
-            # Column likely exists
-            pass
-            
+        
+        # File Relations Table (ID-based, primary storage for duplicates)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS file_relations (
+                id1 INTEGER NOT NULL,
+                id2 INTEGER NOT NULL,
+                relation_type TEXT NOT NULL,
+                distance REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (id1, id2),
+                CHECK (id1 < id2)
+            )
+        ''')
+        
         self.conn.commit()
+
 
     def upsert_file(self, path, phash, size, width, height, mtime):
         """Insert or update a file record."""
@@ -147,55 +145,57 @@ class DatabaseManager:
         cursor = self.conn.execute(query, params)
         return cursor.fetchall()
     
-    def add_ignored_pair(self, hash1, hash2, reason='not_duplicate'):
-        """Add a pair of hashes to the ignore list."""
-        # Ensure order to avoid duplicates (min, max)
-        h1, h2 = sorted((hash1, hash2))
-        self.connect()
-        self.conn.execute('''
-            INSERT INTO ignored_pairs (hash1, hash2, reason) VALUES (?, ?, ?)
-            ON CONFLICT(hash1, hash2) DO UPDATE SET reason=excluded.reason
-        ''', (h1, h2, reason))
-        self.conn.commit()
 
-    def add_ignored_pairs_batch(self, pairs, overwrite=True):
-        """Batch insert pairs. pairs = [(h1, h2, reason), ...]"""
-        if not pairs: return
-        
-        # Ensure ordered
-        normalized = []
-        for h1, h2, r in pairs:
-            sh1, sh2 = sorted((h1, h2))
-            normalized.append((sh1, sh2, r))
-            
-        self.connect()
+    def is_ignored(self, id1, id2):
+        """Check if pair of IDs is ignored."""
         try:
-            if overwrite:
-                self.conn.executemany('''
-                    INSERT INTO ignored_pairs (hash1, hash2, reason) VALUES (?, ?, ?)
-                    ON CONFLICT(hash1, hash2) DO UPDATE SET reason=excluded.reason
-                ''', normalized)
-            else:
-                 self.conn.executemany('''
-                    INSERT INTO ignored_pairs (hash1, hash2, reason) VALUES (?, ?, ?)
-                    ON CONFLICT(hash1, hash2) DO NOTHING
-                ''', normalized)
-            self.conn.commit()
-        except sqlite3.Error as e:
-            print(f"Batch DB Insert Error: {e}")
-
-    def is_ignored(self, hash1, hash2):
-        h1, h2 = sorted((hash1, hash2))
+            i1, i2 = int(id1), int(id2)
+        except (ValueError, TypeError):
+            return False
+            
+        s1, s2 = sorted((i1, i2))
         self.connect()
-        cursor = self.conn.execute("SELECT 1 FROM ignored_pairs WHERE hash1 = ? AND hash2 = ?", (h1, h2))
+        # 'new_match' is visible (pending). System types are visible.
+        # Everything else is considered "Handled" (Hidden by default unless Show Annotated is on).
+        # Wait, user logic: "types new_mach - shown not on show anotated image" -> Show Annotated=False shows new_match.
+        # Show Annotated=True shows everything? Or shows Not-New-Match?
+        # Usually: Default view = Pending (new_match). History view = All or filter.
+        # "is_ignored" usually means "Should I hide this from the Pending view?"
+        # So if relation exists AND type != 'new_match', it is ignored (handled).
+        
+        cursor = self.conn.execute(
+            "SELECT 1 FROM file_relations WHERE id1 = ? AND id2 = ? AND relation_type != 'new_match'", 
+            (s1, s2)
+        )
         return cursor.fetchone() is not None
 
-    def get_ignore_reason(self, hash1, hash2):
-        h1, h2 = sorted((hash1, hash2))
+    def get_ignore_reason(self, id1, id2):
+        try:
+            i1, i2 = int(id1), int(id2)
+        except: return None
+        
+        s1, s2 = sorted((i1, i2))
         self.connect()
-        cursor = self.conn.execute("SELECT reason FROM ignored_pairs WHERE hash1 = ? AND hash2 = ?", (h1, h2))
+        cursor = self.conn.execute("SELECT relation_type FROM file_relations WHERE id1 = ? AND id2 = ?", (s1, s2))
         row = cursor.fetchone()
-        return row['reason'] if row else None
+        return row['relation_type'] if row else None
+        
+    def add_ignored_pair_id(self, id1, id2, reason='not_duplicate', distance=None):
+        try:
+            i1, i2 = int(id1), int(id2)
+        except: return
+        
+        s1, s2 = sorted((i1, i2))
+        self.connect()
+        try:
+            self.conn.execute(
+                "INSERT INTO file_relations (id1, id2, relation_type, distance) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(id1, id2) DO UPDATE SET relation_type=excluded.relation_type, distance=excluded.distance",
+                (s1, s2, reason, distance)
+            )
+            self.conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"Error adding relation ID: {e}")
 
     def add_scanned_path(self, path):
         self.connect()
@@ -226,11 +226,7 @@ class DatabaseManager:
         self.conn.execute("UPDATE files SET path = ? WHERE path = ?", (new_path, old_path))
         self.conn.commit()
 
-    def get_all_ignored_pairs(self):
-        """Retrieve all ignored pairs with their reasons."""
-        self.connect()
-        cursor = self.conn.execute("SELECT hash1, hash2, reason FROM ignored_pairs")
-        return cursor.fetchall()
+
 
     # --- Cluster Persistence Methods ---
     def create_cluster(self, name, target_folder=""):

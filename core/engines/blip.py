@@ -3,17 +3,32 @@ from PIL import Image
 from .base import BaseAIEngine
 
 class BLIPEngine(BaseAIEngine):
-    def __init__(self, db_manager):
-        super().__init__(db_manager)
+    _cached_model = None
+    _cached_processor = None
+
+    def __init__(self, db_manager, file_repo=None):
+        super().__init__(db_manager, file_repo)
         self.processor = None
         self.collection_name = 'blip_embeddings'
         self.engine_name = 'BLIP'
         
     def load_model(self):
+        # Check Cache
+        if BLIPEngine._cached_model is not None:
+             self.model = BLIPEngine._cached_model
+             self.processor = BLIPEngine._cached_processor
+             logger.info("BLIP Model loaded from cache (Instant).")
+             return
+
         try:
             from transformers import BlipProcessor, BlipModel
             self.processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
             self.model = BlipModel.from_pretrained("Salesforce/blip-image-captioning-base")
+            
+            # Populate Cache
+            BLIPEngine._cached_model = self.model
+            BLIPEngine._cached_processor = self.processor
+            
             logger.info("BLIP Model loaded successfully.")
         except ImportError:
             logger.error("transformers not installed. BLIP engine unavailable.")

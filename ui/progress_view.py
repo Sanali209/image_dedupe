@@ -8,10 +8,10 @@ from loguru import logger
 class ProgressWidget(QWidget):
     scan_finished = Signal(object)
 
-    def __init__(self, session):
+    def __init__(self, session, db_manager):
         super().__init__()
         self.session = session
-        self.db = session.db
+        self.db = db_manager
         self.layout = QVBoxLayout(self)
         
         self.status_label = QLabel("Initializing...")

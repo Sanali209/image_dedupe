@@ -12,7 +12,7 @@ A powerful, high-performance desktop application for finding and managing duplic
 
 ### 📦 Sticky Clusters (New!)
 Organize your image library into persistent groups called "Clusters".
-*   **Persistence**: Once you rename, edit, or move files into a cluster, it is **saved forever** in the database.
+*   **Persistence**: Once you rename, edit, or move files into a cluster, it is **saved forever** in the database using robust **ID-based tracking**.
 *   **Auto-Expansion**: Future scans will automatically detect new matches and add them to your existing sticky clusters.
 *   **Drag & Drop**: Easily add images to clusters by dragging them from your file explorer.
 *   **Advanced Management**:
@@ -20,17 +20,24 @@ Organize your image library into persistent groups called "Clusters".
     *   **Set Target**: Define a target folder for each cluster to auto-move files.
     *   **Context Menus**: Right-click to Delete clusters, Remove images, or Open folders.
 
-### 🔍 Precision Filtering
-Control exactly how matches are found:
-*   **Exact Hash**: Match only mathematically identical images.
-*   **AI Matches**: Toggle AI-based loose matching on/off.
-*   **Flexible Criteria**: Combine multiple criteria (Similar Crop, Same Style, etc.) to refine your results.
+### 🔍 Precision Filtering (Relations)
+Control exactly how matches are handled using the new **Relations System**:
+*   **New Match**: Pending AI/Hash matches waiting for review.
+*   **User Decisions**: Mark pairs as `Duplicate`, `Similar`, `Near Duplicate`, `Crop`, `Same Set`, etc.
+*   **Visibility Logic**: "Show Annotated" toggle lets you review your past decisions or focus strictly on new matches.
 
 ### 💻 Advanced User Interface
-*   **Grouped Results**: Displays duplicate groups of any size.
+*   **High-Scale Virtualization**: Results list uses `QListView` virtualization to render 1M+ pairs instantly without memory bloat or lag.
+*   **Pair-Based Results**: New flat list view ("Image A vs Image B") for granular comparison and rapid triage.
 *   **Visual Difference Mode**: Toggle a high-contrast heatmap to spot pixel-level discrepancies.
 *   **Main Menu Actions**: Global commands like "Clear All Clusters" and "New Scan" are easily accessible.
 *   **Dark Mode**: Sleek, modern interface built with PySide6.
+
+## Architecture (New!)
+The application is built on a **Solid** foundation:
+*   **Pydantic Models**: Strict typing (`File`, `FileRelation`, `Cluster`) ensures robust data handling.
+*   **ID-Based Identification**: Modifications, moves, and renames are tracked via database IDs, preventing broken links.
+*   **Generic Relations**: A unified `file_relations` table handles duplicates, similarity, and user-defined groupings.
 
 ## Installation
 

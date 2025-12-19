@@ -8,13 +8,15 @@ from .results_view import ResultsWidget
 from .cluster_view import ClusterViewWidget
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, session, file_repo, cluster_repo, db_manager):
         super().__init__()
         self.setWindowTitle("Image Deduper")
         self.resize(1000, 700)
         
-        self.db = DatabaseManager()
-        self.session = ScanSession(self.db)
+        self.session = session
+        self.file_repo = file_repo
+        self.cluster_repo = cluster_repo
+        self.db = db_manager
         
         # Central Stack
         self.stack = QStackedWidget()
@@ -22,9 +24,9 @@ class MainWindow(QMainWindow):
         
         # Widgets
         self.setup_widget = ScanSetupWidget(self.session)
-        self.progress_widget = ProgressWidget(self.session)
-        self.results_widget = ResultsWidget(self.session)
-        self.cluster_widget = ClusterViewWidget(self.session)
+        self.progress_widget = ProgressWidget(self.session, self.db)
+        self.results_widget = ResultsWidget(self.session, self.file_repo, self.db)
+        self.cluster_widget = ClusterViewWidget(self.session, self.cluster_repo, self.file_repo, self.db)
         
         self.stack.addWidget(self.setup_widget)     # Index 0
         self.stack.addWidget(self.progress_widget)  # Index 1
@@ -33,6 +35,7 @@ class MainWindow(QMainWindow):
         
         # Signals
         self.setup_widget.start_scan.connect(self.start_scan_process)
+        self.setup_widget.show_pairs.connect(self.show_previous_pairs)
         self.progress_widget.scan_finished.connect(self.show_results)
         
         # Toolbar
@@ -91,7 +94,43 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(2)
         self.statusBar.showMessage("Scan complete.")
     
+    def show_previous_pairs(self):
+        """Load previous search results from database, filtered by current threshold."""
+        threshold = self.session.threshold
+        roots = self.session.roots
+        
+        # Get all relations and filter by threshold
+        relations = self.file_repo.get_relations_by_threshold(threshold)
+        
+        if not relations:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.information(self, "No Pairs Found", 
+                f"No pairs found with distance ≤ {threshold}.\nTry running a scan first or adjusting the threshold.")
+            return
+        
+        # Filter by current roots if specified
+        if roots:
+            import os
+            # Get all file IDs from selected roots
+            files_in_roots = self.file_repo.get_files_in_roots(roots)
+            root_file_ids = set(f['id'] for f in files_in_roots)
+            
+            # Filter relations to only include pairs where both files are in roots
+            filtered_relations = [
+                r for r in relations 
+                if r.id1 in root_file_ids and r.id2 in root_file_ids
+            ]
+            relations = filtered_relations
+            
+            if not relations:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.information(self, "No Pairs Found", 
+                    f"No pairs found in selected folders with distance ≤ {threshold}.")
+                return
+        
+        self.statusBar.showMessage(f"Loaded {len(relations)} pairs from database.")
+        self.show_results(existing_results=relations)
+    
     def closeEvent(self, event):
-        self.db.close()
+        # DB lifecycle managed by main.py / DI container
         event.accept()
-

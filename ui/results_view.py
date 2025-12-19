@@ -1,16 +1,53 @@
 import os
+import itertools
 import re
 import subprocess
 import platform
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QListWidget, 
+from loguru import logger
+from core.commands.base import CommandHistory
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QListWidget, QListView, 
                                QLabel, QPushButton, QScrollArea, QFrame, QMessageBox, QListWidgetItem, QMenu,
                                QDialog, QLineEdit, QFileDialog, QDialogButtonBox, QGridLayout, QSizePolicy)
 from PySide6.QtCore import Qt, QSize, Signal, QTimer
-from PySide6.QtGui import QPixmap, QImage, QFont
+from PySide6.QtGui import QPixmap, QImage, QFont, QKeySequence, QShortcut
 import shutil
 from PIL import Image, ImageChops, ImageEnhance, ImageOps
 import numpy as np
 from core.deduper import Deduper
+from PySide6.QtCore import QAbstractListModel, QModelIndex
+
+class PairsModel(QAbstractListModel):
+    def __init__(self, pairs=None, parent=None):
+        super().__init__(parent)
+        self._pairs = pairs or []
+
+    def rowCount(self, parent=QModelIndex()):
+        return len(self._pairs)
+
+    def data(self, index, role=Qt.DisplayRole):
+        if not index.isValid() or not (0 <= index.row() < len(self._pairs)):
+            return None
+        
+        if role == Qt.DisplayRole:
+            left, right, rel = self._pairs[index.row()]
+            n1 = os.path.basename(left['path'])
+            n2 = os.path.basename(right['path'])
+            return f"{n1} vs {n2}"
+        
+        return None
+
+    def setPairs(self, pairs):
+        self.beginResetModel()
+        self._pairs = pairs
+        self.endResetModel()
+
+    def removePairAt(self, index):
+        if 0 <= index < len(self._pairs):
+            self.beginRemoveRows(QModelIndex(), index, index)
+            del self._pairs[index]
+            self.endRemoveRows()
+            return True
+        return False
 
 class MoveFileDialog(QDialog):
     def __init__(self, current_path, parent=None):
@@ -74,44 +111,79 @@ class ComparisonWidget(QWidget):
         img_layout.addWidget(self.lbl_img_top)
         img_layout.addWidget(self.lbl_img_bottom)
         
-        self.layout.addWidget(self.panel_images, 2)
+        self.layout.addWidget(self.panel_images, 1)  # Stretch to fill available space
         
         # --- RIGHT PANEL (CONTROLS) ---
         self.panel_controls = QWidget()
+        self.panel_controls.setMinimumWidth(450)  # Fixed minimum width
+        self.panel_controls.setMaximumWidth(450)  # Fixed maximum width
         ctrl_layout = QVBoxLayout(self.panel_controls)
         ctrl_layout.setAlignment(Qt.AlignTop)
         
+        
         # 1. Header Area (Status + Diff)
-        # self.lbl_status created in controller usually, but here we own it visually
         self.lbl_status = QLabel("Status: New Match")
         self.lbl_status.setAlignment(Qt.AlignCenter)
         self.lbl_status.setStyleSheet("font-weight: bold; font-size: 14px; color: #44ee44; margin-bottom: 10px;")
+        
+        self.lbl_distance = QLabel("Distance: N/A")
+        self.lbl_distance.setAlignment(Qt.AlignCenter)
+        self.lbl_distance.setStyleSheet("font-size: 12px; color: #aaaaaa; margin-bottom: 5px;")
         
         self.btn_diff = QPushButton("Show Visual Diff")
         self.btn_diff.setCheckable(True)
         self.btn_diff.clicked.connect(self.action_diff_toggle.emit)
         
         ctrl_layout.addWidget(self.lbl_status)
+        ctrl_layout.addWidget(self.lbl_distance)
         ctrl_layout.addWidget(self.btn_diff)
+        ctrl_layout.addSpacing(10)
+        
+        # 2. Annotation Buttons (MOVED TO TOP for better UX)
+        ign_layout = QGridLayout()
+        ign_layout.setSpacing(5)
+        
+        # Define buttons
+        btn_dup = QPushButton("Duplicate")
+        btn_near = QPushButton("Near Duplicate")
+        btn_sim = QPushButton("Similar")
+        btn_crop = QPushButton("Crop Duplicate")
+        btn_style = QPushButton("Similar Style")
+        btn_person = QPushButton("Same Person")
+        btn_set = QPushButton("Same Image Set")
+        btn_other = QPushButton("Other")
+        btn_not = QPushButton("Not Duplicate")
+        
+        # Connect signals
+        btn_dup.clicked.connect(lambda: self.action_ignore.emit('duplicate'))
+        btn_near.clicked.connect(lambda: self.action_ignore.emit('near_duplicate'))
+        btn_sim.clicked.connect(lambda: self.action_ignore.emit('similar'))
+        btn_crop.clicked.connect(lambda: self.action_ignore.emit('crop_duplicate'))
+        btn_style.clicked.connect(lambda: self.action_ignore.emit('similar_style'))
+        btn_person.clicked.connect(lambda: self.action_ignore.emit('same_person'))
+        btn_set.clicked.connect(lambda: self.action_ignore.emit('same_image_set'))
+        btn_other.clicked.connect(lambda: self.action_ignore.emit('other'))
+        btn_not.clicked.connect(lambda: self.action_ignore.emit('not_duplicate'))
+        
+        # Add to Grid (3 cols)
+        ign_layout.addWidget(btn_dup, 0, 0)
+        ign_layout.addWidget(btn_near, 0, 1)
+        ign_layout.addWidget(btn_sim, 0, 2)
+        ign_layout.addWidget(btn_crop, 1, 0)
+        ign_layout.addWidget(btn_style, 1, 1)
+        ign_layout.addWidget(btn_person, 1, 2)
+        ign_layout.addWidget(btn_set, 2, 0)
+        ign_layout.addWidget(btn_other, 2, 1)
+        ign_layout.addWidget(btn_not, 2, 2)
+        
+        ctrl_layout.addLayout(ign_layout)
         ctrl_layout.addSpacing(20)
         
-        # 2. Attribute Grid
-        # Cols: Name | Size | Res | Actions
+        # 3. Attribute Grid (Names, Sizes, Dimensions, Delete Buttons)
         self.grid = QGridLayout()
         self.grid.setHorizontalSpacing(15)
         self.grid.setVerticalSpacing(15)
         
-        # -- Helpers to create stacked widget pairs --
-        def create_stack(w1, w2, w3=None):
-            f = QFrame()
-            l = QVBoxLayout(f)
-            l.setContentsMargins(0,0,0,0)
-            l.setSpacing(5)
-            l.addWidget(w1)
-            l.addWidget(w2)
-            if w3: l.addWidget(w3)
-            return f
-
         # -- Column 0: Names --
         self.lbl_name_top = QLabel()
         self.lbl_name_top.setWordWrap(True)
@@ -119,12 +191,6 @@ class ComparisonWidget(QWidget):
         self.lbl_name_bottom = QLabel()
         self.lbl_name_bottom.setWordWrap(True)
         self.lbl_name_bottom.setStyleSheet("font-weight: bold;")
-        
-        stack_names = create_stack(QLabel("Name (Top)"), self.lbl_name_top, 
-                                   create_stack(QLabel("Name (Bottom)"), self.lbl_name_bottom)) 
-        # Actually logic says "Top" then "Bottom". Let's grouping nicely.
-        # User sketch: "Top Name" Box, "Bottom Name" Box.
-        # Better: Just put labels directly in VBox.
         
         vbox_names = QVBoxLayout()
         vbox_names.addWidget(QLabel("<b>Top Name:</b>"))
@@ -208,32 +274,6 @@ class ComparisonWidget(QWidget):
         self.grid.addWidget(w_paths, 1, 0, 1, 4) # Span full width
 
         ctrl_layout.addLayout(self.grid)
-        ctrl_layout.addSpacing(20)
-        
-        # 3. Ignore Actions
-        ign_layout = QHBoxLayout()
-        self.btn_ign_not = QPushButton("Not Duplicate")
-        self.btn_ign_sim = QPushButton("Similar")
-        self.btn_ign_set = QPushButton("Same Set")
-        # New Relationship Types
-        self.btn_ign_crop = QPushButton("Similar Crop")
-        self.btn_ign_style = QPushButton("Similar Style")
-        self.btn_ign_other = QPushButton("Other")
-        
-        self.btn_ign_not.clicked.connect(lambda: self.action_ignore.emit('not_duplicate'))
-        self.btn_ign_sim.clicked.connect(lambda: self.action_ignore.emit('similar'))
-        self.btn_ign_set.clicked.connect(lambda: self.action_ignore.emit('same_set'))
-        self.btn_ign_crop.clicked.connect(lambda: self.action_ignore.emit('similar_crop'))
-        self.btn_ign_style.clicked.connect(lambda: self.action_ignore.emit('similar_style'))
-        self.btn_ign_other.clicked.connect(lambda: self.action_ignore.emit('other'))
-        
-        ign_layout.addWidget(self.btn_ign_not)
-        ign_layout.addWidget(self.btn_ign_sim)
-        ign_layout.addWidget(self.btn_ign_set)
-        ign_layout.addWidget(self.btn_ign_crop)
-        ign_layout.addWidget(self.btn_ign_style)
-        ign_layout.addWidget(self.btn_ign_other)
-        ctrl_layout.addLayout(ign_layout)
         
         ctrl_layout.addStretch()
         
@@ -404,21 +444,42 @@ class ComparisonWidget(QWidget):
         else:
             label.setText("Invalid Image")
 
+    def clear(self):
+        self.current_pair = None
+        self.lbl_img_top.clear()
+        self.lbl_img_bottom.clear()
+        self.lbl_name_top.clear()
+        self.lbl_name_bottom.clear()
+        self.lbl_folder_top.clear()
+        self.lbl_folder_bottom.clear()
+        self.lbl_res_top.clear()
+        self.lbl_res_bottom.clear()
+        self.lbl_size_top.clear()
+        self.lbl_size_bottom.clear()
+        self.lbl_status.clear()
+        self.lbl_counter.clear()
+
+
 class ResultsWidget(QWidget):
-    def __init__(self, session):
+    def __init__(self, session, file_repo, db_manager):
         super().__init__()
         self.session = session
-        self.db = session.db
-        self.deduper = Deduper(self.db)
+        self.file_repo = file_repo
+        self.db = db_manager
+        self.deduper = Deduper(self.db, self.file_repo)
+        
+        self.command_history = CommandHistory()
         
         self.layout = QVBoxLayout(self)
         
         self.splitter = QSplitter(Qt.Horizontal)
         self.layout.addWidget(self.splitter)
         
-        self.group_list = QListWidget()
-        self.group_list.currentRowChanged.connect(self.on_group_selected)
-        self.splitter.addWidget(self.group_list)
+        self.model = PairsModel()
+        self.group_view = QListView()
+        self.group_view.setModel(self.model)
+        self.group_view.selectionModel().currentRowChanged.connect(self.on_group_selected_idx)
+        self.splitter.addWidget(self.group_view)
         
         self.comparison = ComparisonWidget()
         self.splitter.addWidget(self.comparison)
@@ -440,60 +501,97 @@ class ResultsWidget(QWidget):
         self.current_group_idx = -1
         self.right_index = 1
 
+        # Keyboard shortcut for undo
+        QShortcut(QKeySequence("Ctrl+Z"), self, self.undo)
+    
+    def undo(self):
+        """Undo the last action."""
+        if self.command_history.undo():
+            self.refresh_current_view()
+    
+
     def load_results(self, existing_results=None):
         self.include_ignored = self.session.include_ignored
         
-        # Initialize engine
-        engine_type = self.session.engine
-        try:
-            self.deduper.set_engine(engine_type)
-        except Exception as e:
-            QMessageBox.critical(self, "Engine Error", f"Failed to load engine {engine_type}:\n{e}")
-            return
-
+        relations = []
         if existing_results is not None:
-             self.groups = existing_results
+             relations = existing_results
         else:
-             self.groups = self.deduper.find_duplicates(
-                 self.session.threshold, 
-                 self.session.include_ignored, 
-                 self.session.roots
-             )
-        self.group_list.clear()
-        
-        # Incremental Loading to prevent GUI freeze
-        self._load_index = 0
-        self._batch_size = 100
-        QTimer.singleShot(0, self.load_next_batch)
+             # Initialize engine
+             engine_type = self.session.engine
+             try:
+                 self.deduper.set_engine(engine_type)
+                 # Deduper now returns List[FileRelation]
+                 relations = self.deduper.find_duplicates(
+                     self.session.threshold, 
+                     self.session.include_ignored, 
+                     self.session.roots
+                 )
+             except Exception as e:
+                 QMessageBox.critical(self, "Engine Error", f"Failed to load engine {engine_type}:\n{e}")
+                 return
 
-    def load_next_batch(self):
-        end = min(self._load_index + self._batch_size, len(self.groups))
+        # Hydrate relations with file info
+        from core.models import FileRelation, RelationType
         
-        for i in range(self._load_index, end):
-            group = self.groups[i]
-            self.group_list.addItem(f"Group {i+1}: {len(group)} images")
-        
-        self._load_index = end
-        
-        if self._load_index < len(self.groups):
-            # Schedule next batch
-            QTimer.singleShot(0, self.load_next_batch)
-        else:
-            # Finished loading
-            if self.groups:
-                # Select first only if nothing selected? Or re-select?
-                # Just defaulting to 0 is fine.
-                if self.group_list.currentRow() == -1:
-                    self.group_list.setCurrentRow(0)
+        # 1. Collect all File IDs
+        all_ids = set()
+        valid_relations = []
+        for item in relations:
+            if isinstance(item, FileRelation):
+                all_ids.add(item.id1)
+                all_ids.add(item.id2)
+                valid_relations.append(item)
             else:
-                QMessageBox.information(self, "Scan Complete", "No duplicates found.")
+                pass
+        
+        logger.info(f"ResultsView: Received {len(relations)} relations, extracted {len(all_ids)} unique file IDs.")
+
+        # 2. Bulk Fetch Files
+        files_map = {}
+        if all_ids:
+            rows = self.file_repo.get_files_by_ids(list(all_ids))
+            for r in rows:
+                files_map[r['id']] = r
+        
+        logger.info(f"ResultsView: Hydrated {len(files_map)} files from DB.")
+
+        # 3. Build Pairs List
+        self.pairs = []
+        for rel in valid_relations:
+            is_visible = rel.is_visible
+            
+            if not self.include_ignored and not is_visible:
+                continue
+                
+            left = files_map.get(rel.id1)
+            right = files_map.get(rel.id2)
+            
+            if left and right:
+                self.pairs.append((left, right, rel))
+            else:
+                logger.warning(f"ResultsView: Missing file data for relation {rel.id1} <-> {rel.id2}")
+
+        logger.info(f"ResultsView: Built {len(self.pairs)} pairs for display (Visible only: {not self.include_ignored}).")
+        
+        # Virtualized Load
+        self.model.setPairs(self.pairs)
+        
+        if self.pairs:
+            self.group_view.setCurrentIndex(self.model.index(0, 0))
+            self.comparison.setVisible(True)
+        else:
+            self.comparison.setVisible(False)
+
+
+    # Virtualization removed the need for load_next_batch
+
 
     def is_pair_visible(self, left, right):
         if getattr(self, 'include_ignored', False):
             return True
-        h1 = left['phash'] if left['phash'] else left['path']
-        h2 = right['phash'] if right['phash'] else right['path']
-        return not self.db.is_ignored(h1, h2)
+        # Use IDs for filtering (robust against renames)
+        return not self.db.is_ignored(left['id'], right['id'])
 
     def find_next_visible_index(self, group, start_index, direction=1):
         idx = start_index
@@ -503,45 +601,33 @@ class ResultsWidget(QWidget):
             idx += direction
         return -1
 
-    def on_group_selected(self, row):
-        if row < 0 or row >= len(self.groups): return
-        self.current_group_idx = row
-        group = self.groups[row]
-        if len(group) >= 2:
-            self.right_index = 1
-            # Ensure we start on a visible pair
-            if not self.is_pair_visible(group[0], group[self.right_index]):
-                next_valid = self.find_next_visible_index(group, self.right_index + 1, 1)
-                if next_valid != -1:
-                    self.right_index = next_valid
-                else:
-                    # Try searching from start too if 1 was invalid?
-                    # Actually find_next_visible_index(group, 1, 1) would do it.
-                    pass
-            self.update_comparison()
+
+    def on_group_selected_idx(self, current, previous):
+        if not current.isValid(): return
+        self.current_pair_idx = current.row()
+        self.update_comparison()
+
+    # Legacy method signature adapter if needed, but we changed connection
+    # def on_group_selected(self, row): ...
+
 
     def update_comparison(self):
-        if self.current_group_idx == -1: return
-        group = self.groups[self.current_group_idx]
+        if self.current_pair_idx < 0 or self.current_pair_idx >= len(self.pairs): return
         
-        # Bounds check
-        if self.right_index >= len(group):
-            self.right_index = len(group) - 1
-        if self.right_index < 1 and len(group) > 1:
-            self.right_index = 1
-            
-        left = group[0]
-        right = group[self.right_index]
+        left, right, rel = self.pairs[self.current_pair_idx]
         
         self.comparison.load_pair(left, right)
         
         if self.comparison.btn_diff.isChecked():
             self.show_diff_image(left, right)
-            
-        h1 = left['phash'] if left['phash'] else left['path']
-        h2 = right['phash'] if right['phash'] else right['path']
         
-        reason = self.db.get_ignore_reason(h1, h2)
+        # Display distance
+        if rel and hasattr(rel, 'distance') and rel.distance is not None:
+            self.comparison.lbl_distance.setText(f"Distance: {rel.distance:.2f}")
+        else:
+            self.comparison.lbl_distance.setText("Distance: N/A")
+            
+        reason = self.db.get_ignore_reason(left['id'], right['id'])
         if reason:
             self.comparison.lbl_status.setText(f"Marked as: {reason}")
             self.comparison.lbl_status.setStyleSheet("color: #eebb00; font-weight: bold; margin-bottom: 10px; font-size: 14px;")
@@ -549,54 +635,38 @@ class ResultsWidget(QWidget):
             self.comparison.lbl_status.setText("Status: New Match")
             self.comparison.lbl_status.setStyleSheet("color: #44ee44; font-weight: bold; margin-bottom: 10px; font-size: 14px;")
 
-        # Enable/Disable based on available VISIBLE pairs
-        has_next = self.find_next_visible_index(group, self.right_index + 1, 1) != -1
-        has_prev = self.find_next_visible_index(group, self.right_index - 1, -1) != -1
+        # Navigation is now via list, so disable inner next/prev
+        self.comparison.btn_next.setEnabled(False)
+        self.comparison.btn_prev.setEnabled(False)
         
-        self.comparison.btn_next.setEnabled(has_next)
-        self.comparison.btn_prev.setEnabled(has_prev)
-        self.comparison.lbl_counter.setText(f"Comparing 1 & {self.right_index + 1} of {len(group)}")
+        self.comparison.btn_next.setEnabled(self.current_pair_idx < len(self.pairs) - 1)
+        self.comparison.btn_prev.setEnabled(self.current_pair_idx > 0)
+        
+        self.comparison.lbl_counter.setText(f"Pair {self.current_pair_idx + 1} of {len(self.pairs)}")
 
     def next_image(self):
-        if self.current_group_idx == -1: return
-        group = self.groups[self.current_group_idx]
-        
-        next_idx = self.find_next_visible_index(group, self.right_index + 1, 1)
-        if next_idx != -1:
-            self.right_index = next_idx
-            self.update_comparison()
+        if self.current_pair_idx < len(self.pairs) - 1:
+            self.group_view.setCurrentIndex(self.model.index(self.current_pair_idx + 1, 0))
 
     def prev_image(self):
-        if self.current_group_idx == -1: return
-        group = self.groups[self.current_group_idx]
-        
-        prev_idx = self.find_next_visible_index(group, self.right_index - 1, -1)
-        if prev_idx != -1:
-            self.right_index = prev_idx
-            self.update_comparison()
+        if self.current_pair_idx > 0:
+            self.group_view.setCurrentIndex(self.model.index(self.current_pair_idx - 1, 0))
 
     def resolve(self, action, reason=None):
-        if self.current_group_idx == -1: return
-        group = self.groups[self.current_group_idx]
-        if len(group) < 2: return
+        if getattr(self, 'current_pair_idx', -1) == -1: return
+        if self.current_pair_idx >= len(self.pairs): return
         
-        left = group[0]
-        right = group[self.right_index]
+        left, right, rel = self.pairs[self.current_pair_idx]
         
         try:
             if action == 'delete_left':
                 os.remove(left['path'])
                 self.db.mark_deleted(left['path'])
-                group.pop(0)
             elif action == 'delete_right':
                 os.remove(right['path'])
                 self.db.mark_deleted(right['path'])
-                group.pop(self.right_index)
-                if self.right_index >= len(group): self.right_index = len(group) - 1
             elif action == 'ignore':
-                h1 = left['phash'] if left['phash'] else left['path']
-                h2 = right['phash'] if right['phash'] else right['path']
-                self.db.add_ignored_pair(h1, h2, reason)
+                self.db.add_ignored_pair_id(left['id'], right['id'], reason)
                 if not getattr(self, 'include_ignored', False):
                     # Hide ignored mode -> Move to next visible
                     # We do NOT pop if we want to potentially see it later if mode toggled.
@@ -616,58 +686,57 @@ class ResultsWidget(QWidget):
                     return 
             elif action == 'l_r': 
                 shutil.copy2(right['path'], left['path'])
-                self.db.upsert_file(left['path'], right['phash'], right['file_size'],right['width'], right['height'], os.path.getmtime(left['path']))
-                group.pop(0)
+                self.db.upsert_file(left['path'], None, right['file_size'], right['width'], right['height'], os.path.getmtime(left['path']))
             elif action == 'r_l': 
                 shutil.copy2(left['path'], right['path'])
-                self.db.upsert_file(right['path'], left['phash'], left['file_size'], left['width'], left['height'], os.path.getmtime(right['path']))
-                group.pop(self.right_index)
-                if self.right_index >= len(group): self.right_index = len(group) - 1
+                self.db.upsert_file(right['path'], None, left['file_size'], left['width'], left['height'], os.path.getmtime(right['path']))
+                # group.pop(self.right_index) # This was for old group logic
+                # Refresh UI (Remove this pair)
+            # Efficiently remove current pair from list and select next
+            idx = self.current_pair_idx
+            
+            # Model-based removal
+            success = self.model.removePairAt(idx)
+            # Note: pairs list inside model is same reference as self.pairs if we passed it?
+            # Actually we passed self.pairs but model might have stored it. 
+            # If model modifies it, self.pairs is modified too if it's the same object.
+            # PairsModel(self.pairs) -> self._pairs = pairs. Yes.
+            # So `del self.pairs[idx]` is redundant if model does it.
+            # Let's rely on model to do the deletion to ensure consistency.
+            # Wait, `removePairAt` executes `del self._pairs[index]`.
+            # So we should NOT delete from self.pairs again if they are the same list object.
+            
+            if idx < len(self.pairs):
+                new_idx_q = self.model.index(idx, 0)
+                self.group_view.setCurrentIndex(new_idx_q)
+                
+                # Manual forced update if index matches (signal might not fire if same row reused?)
+                # In QListView/QAbstractItemModel, rows shift. 
+                # If we remove row 5, row 6 becomes row 5.
+                # If selection was 5, does it stay 5?
+                # Usually yes. So signal might NOT fire since "current row" is still 5.
+                self.current_pair_idx = idx
+                self.update_comparison()
+                
+            elif len(self.pairs) > 0:
+                # We were at the end
+                new_idx = len(self.pairs) - 1
+                self.group_view.setCurrentIndex(self.model.index(new_idx, 0))
+                self.current_pair_idx = new_idx
+                self.update_comparison()
+            else:
+                self.comparison.clear() # Clear view
+        
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
             return
 
-        if len(group) < 2:
-            self.groups.pop(self.current_group_idx)
-            self.group_list.takeItem(self.current_group_idx)
-            if self.current_group_idx >= len(self.groups): self.current_group_idx = len(self.groups) - 1
-            self.group_list.setCurrentRow(self.current_group_idx)
-            if self.current_group_idx != -1:
-                self.on_group_selected(self.current_group_idx)
-                item = self.group_list.item(self.current_group_idx)
-                if item: self.group_list.scrollToItem(item)
-        else:
-            # CHECK IF GROUP IS "EMPTY" due to filtering (All pairs ignored)
-            if not getattr(self, 'include_ignored', False):
-                 if self.find_next_visible_index(group, 1, 1) == -1:
-                      # No visible pairs left in this group!
-                      self.groups.pop(self.current_group_idx)
-                      self.group_list.takeItem(self.current_group_idx)
-                      if self.current_group_idx >= len(self.groups): self.current_group_idx = len(self.groups) - 1
-                      self.group_list.setCurrentRow(self.current_group_idx)
-                      if self.current_group_idx != -1:
-                           self.on_group_selected(self.current_group_idx)
-                           item = self.group_list.item(self.current_group_idx)
-                           if item: self.group_list.scrollToItem(item)
-                      return
 
-            # Re-validate position
-            if not self.is_pair_visible(group[0], group[self.right_index]):
-                 # Seek valid
-                 next_idx = self.find_next_visible_index(group, self.right_index, 1)
-                 if next_idx == -1: next_idx = self.find_next_visible_index(group, self.right_index, -1)
-                 
-                 if next_idx != -1:
-                     self.right_index = next_idx
-                     
-            self.update_comparison()
-            self.group_list.item(self.current_group_idx).setText(f"Group {self.current_group_idx+1}: {len(group)} images")
 
     def smart_resolve(self, criteria):
-        if self.current_group_idx == -1: return
-        group = self.groups[self.current_group_idx]
-        left = group[0]
-        right = group[self.right_index]
+        if self.current_pair_idx == -1 or self.current_pair_idx >= len(self.pairs): return
+        left, right, rel = self.pairs[self.current_pair_idx]
+        
         action = None
         if criteria == 'size':
             if left['file_size'] < right['file_size']: action = 'delete_left'
@@ -699,14 +768,22 @@ class ResultsWidget(QWidget):
 
     def on_file_moved(self, old_path, new_path):
         self.db.move_file(old_path, new_path)
+        # Update pairs in memory
         found = False
-        if self.current_group_idx != -1:
-            group = self.groups[self.current_group_idx]
-            for i, f in enumerate(group):
-                if f['path'] == old_path:
-                    new_f = dict(f)
-                    new_f['path'] = new_path
-                    group[i] = new_f
-                    found = True
-                    break
-        if found: self.update_comparison()
+        for i, (left, right, rel) in enumerate(self.pairs):
+            updated = False
+            l_new, r_new = dict(left), dict(right)
+            
+            if left['path'] == old_path:
+                l_new['path'] = new_path
+                updated = True
+            elif right['path'] == old_path:
+                r_new['path'] = new_path
+                updated = True
+                
+            if updated:
+                self.pairs[i] = (l_new, r_new, rel)
+                found = True
+        
+        if found and 0 <= self.current_pair_idx < len(self.pairs):
+             self.update_comparison()

@@ -3,14 +3,25 @@ from loguru import logger
 import os
 
 class GraphBuilder:
-    def __init__(self, db_manager):
+    def __init__(self, db_manager, file_repo=None):
         self.db_manager = db_manager
+        self.file_repo = file_repo
 
     def build_graph_and_find_components(self, files, criteria):
         """
         Builds the adjacency graph and returns connected components.
         """
         file_map = {f['path']: f for f in files}
+        # ID map for faster lookups. Safe extraction from sqlite3.Row or dict
+        id_map = {}
+        for f in files:
+            # sqlite3.Row behaves like tuple for 'in' check (checks values), so use key access
+            try:
+                fid = f['id']
+                id_map[fid] = f['path']
+            except (IndexError, KeyError):
+                pass
+        
         all_paths = list(file_map.keys())
         adj = defaultdict(set)
         
@@ -32,38 +43,68 @@ class GraphBuilder:
                             adj[paths[j]].add(paths[i])
                             edge_stats['hash'] += 1
 
-        # 2. Database Relationships (Ignored Pairs / AI / Similar)
-        ignored = self.db_manager.get_all_ignored_pairs()
+        # 2. Database Relationships
         negative_edges = set()
-
-        for row in ignored:
-            h1, h2, reason = row['hash1'], row['hash2'], row['reason']
-            if not reason: reason = 'not_duplicate'
-            
-            # Resolve Identifiers (Hash vs Path)
-            set1 = self._resolve_paths(h1, file_map, files)
-            set2 = self._resolve_paths(h2, file_map, files)
-            
-            if not set1 or not set2: continue
-            
-            if reason == 'not_duplicate':
-                # Treat as negative constraint unless ignored
-                if not criteria.get('not_duplicate', False):
-                    for f1 in set1:
-                        for f2 in set2:
-                            negative_edges.add(tuple(sorted((f1, f2))))
-            else:
-                # Positive relationship (e.g. ai_match, similar)
-                should_add = True
-                if not criteria.get(reason, False):
-                     should_add = False
+        
+        # New Logic: Use FileRepository and IDs if available
+        if self.file_repo:
+            relations = self.file_repo.get_all_relations()
+            for rel in relations:
+                # Check negative first
+                # Handle Enum or string
+                r_val = rel.relation_type.value if hasattr(rel.relation_type, 'value') else rel.relation_type
                 
-                if should_add:
-                    for f1 in set1:
-                        for f2 in set2:
-                            adj[f1].add(f2)
-                            adj[f2].add(f1)
-                            edge_stats['db'] += 1
+                if r_val == 'not_duplicate':
+                    if not criteria.get('not_duplicate', False):
+                         p1 = id_map.get(rel.id1)
+                         p2 = id_map.get(rel.id2)
+                         if p1 and p2:
+                             negative_edges.add(tuple(sorted((p1, p2))))
+                    continue
+
+                # Check configured positive types
+                # e.g. criteria['duplicate'], criteria['near_duplicate']
+                if criteria.get(r_val, False):
+                    p1 = id_map.get(rel.id1)
+                    p2 = id_map.get(rel.id2)
+                    
+                    if p1 and p2:
+                        adj[p1].add(p2)
+                        adj[p2].add(p1)
+                        edge_stats['db'] += 1
+                        
+        else:
+            # Legacy Fallback (Hash-based)
+            ignored = self.db_manager.get_all_ignored_pairs()
+
+            for row in ignored:
+                h1, h2, reason = row['hash1'], row['hash2'], row['reason']
+                if not reason: reason = 'not_duplicate'
+                
+                # Resolve Identifiers (Hash vs Path)
+                set1 = self._resolve_paths(h1, file_map, files)
+                set2 = self._resolve_paths(h2, file_map, files)
+                
+                if not set1 or not set2: continue
+                
+                if reason == 'not_duplicate':
+                    # Treat as negative constraint unless ignored
+                    if not criteria.get('not_duplicate', False):
+                        for f1 in set1:
+                            for f2 in set2:
+                                negative_edges.add(tuple(sorted((f1, f2))))
+                else:
+                    # Positive relationship (e.g. ai_match, similar)
+                    should_add = True
+                    if not criteria.get(reason, False):
+                         should_add = False
+                    
+                    if should_add:
+                        for f1 in set1:
+                            for f2 in set2:
+                                adj[f1].add(f2)
+                                adj[f2].add(f1)
+                                edge_stats['db'] += 1
         
         # 3. On-the-fly AI (passed via engine if needed, but usually we persist AI matches first)
         # Deduper handles calling engine.find_duplicates separately or we pass it here.

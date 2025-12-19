@@ -1,7 +1,7 @@
 # Current Project State
 
-**Date:** 2025-12-12
-**Status:** Alpha / Active Development
+**Date:** 2025-12-17
+**Status:** Beta / Active Development
 
 ## Overview
 The project is a functional desktop application for image deduplication. It has transitioned from a basic script to a structured GUI application with advanced features like fuzzy matching caching, and smart resolution.
@@ -29,14 +29,19 @@ The project is a functional desktop application for image deduplication. It has 
         *   Smart Actions (Delete Smaller/Lower Res).
 
 ## Recent Changes
-1.  **Performance**: Switched fuzzy matching to BK-Tree. Added `root_paths` filtering to deduplication to improve speed when focusing on specific subfolders.
+1.  **Performance**: 
+    *   **Virtualized Results List**: Replaced `QListWidget` with `QListView` + `QAbstractListModel` to support 1M+ pairs with zero UI lag.
+    *   Switched fuzzy matching to BK-Tree. 
+    *   Added `root_paths` filtering to deduplication to improve speed when focusing on specific subfolders.
 2.  **UI/UX**:
+    *   **Selection Logic Fix**: Fixed issue where resolving the last item in the list caused the comparison view to stall.
     *   Added "Show Difference" visualization.
     *   Added "Mark as..." dropdown with categorization.
     *   Added "Move to Folder" with **smart renaming** (auto-increment suffix) to handle collisions.
     *   Added Status Label to indicate NEW vs MARKED pairs.
 3.  **Config**: Added "Similarity Threshold" spinner.
 4.  **Stability**:
+    *   **Engine Initialization**: Fixed `TypeError` in `CLIPEngine` and `BLIPEngine` constructors.
     *   Fixed `IndexError` in navigation.
     *   Fixed `AttributeError` in UI initialization.
     *   Restored missing imports (`QPixmap`, `defaultdict`).

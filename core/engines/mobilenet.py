@@ -3,13 +3,25 @@ from PIL import Image
 from .base import BaseAIEngine
 
 class MobileNetEngine(BaseAIEngine):
-    def __init__(self, db_manager):
-        super().__init__(db_manager)
+    _cached_model = None
+    _cached_preprocess = None
+
+    _cached_preprocess = None
+    
+    def __init__(self, db_manager, file_repo=None):
+        super().__init__(db_manager, file_repo)
         self.preprocess = None
         self.collection_name = 'mobilenet_embeddings'
         self.engine_name = 'MobileNet'
         
     def load_model(self):
+        # Check Cache
+        if MobileNetEngine._cached_model is not None:
+             self.model = MobileNetEngine._cached_model
+             self.preprocess = MobileNetEngine._cached_preprocess
+             logger.info("MobileNetV3 Model loaded from cache (Instant).")
+             return
+
         try:
             import torch
             import torchvision.models as models
@@ -24,6 +36,10 @@ class MobileNetEngine(BaseAIEngine):
             self.model.eval()
             
             self.preprocess = weights.transforms()
+            
+            # Populate Cache
+            MobileNetEngine._cached_model = self.model
+            MobileNetEngine._cached_preprocess = self.preprocess
             
             logger.info("MobileNetV3 (Small) Model loaded successfully.")
         except ImportError:

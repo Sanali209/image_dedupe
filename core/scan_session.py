@@ -8,9 +8,9 @@ class ScanSession(QObject):
     """
     config_changed = Signal() # Emitted when any config changes
 
-    def __init__(self, db_manager):
+    def __init__(self, file_repository):
         super().__init__()
-        self.db = db_manager
+        self.file_repo = file_repository
         
         # Core State
         self._roots = []
@@ -37,7 +37,7 @@ class ScanSession(QObject):
 
     def load_defaults(self):
         """Load persisted state from DB (like scanned paths)."""
-        self._roots = self.db.get_scanned_paths()
+        self._roots = self.file_repo.get_scanned_paths()
 
     # --- Properties with Signals ---
 
@@ -51,12 +51,12 @@ class ScanSession(QObject):
             self._roots = paths
             # Sync to DB immediately as per original behavior
             current = set(paths)
-            existing = set(self.db.get_scanned_paths())
+            existing = set(self.file_repo.get_scanned_paths())
             
             for p in existing - current:
-                self.db.remove_scanned_path(p)
+                self.file_repo.remove_scanned_path(p)
             for p in current - existing:
-                self.db.add_scanned_path(p)
+                self.file_repo.add_scanned_path(p)
                 
             self.config_changed.emit()
 

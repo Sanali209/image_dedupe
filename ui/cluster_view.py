@@ -113,11 +113,13 @@ class ClusterImageList(QListWidget):
             super().dropEvent(event)
 
 class ClusterViewWidget(QWidget):
-    def __init__(self, session):
+    def __init__(self, session, cluster_repo, file_repo, db_manager):
         super().__init__()
         self.session = session
-        self.db = session.db
-        self.deduper = Deduper(self.db)
+        self.cluster_repo = cluster_repo
+        self.file_repo = file_repo
+        self.db = db_manager
+        self.deduper = Deduper(self.db, self.file_repo)
         self.clusters = [] 
         
         # Initialize Thumbnail Manager
@@ -141,24 +143,33 @@ class ClusterViewWidget(QWidget):
         self.chk_ai_match = QCheckBox("AI Matches") # New strict control
         self.chk_exact.setChecked(True)
         self.chk_ai_match.setChecked(True)
-        self.chk_similar = QCheckBox("Similar (User)")
+        self.chk_dup = QCheckBox("Duplicate") # User confirmed
+        self.chk_dup.setChecked(True)
+        self.chk_near = QCheckBox("Near Duplicate")
+        self.chk_near.setChecked(True)
+        self.chk_similar = QCheckBox("Similar (generic)")
         self.chk_similar.setChecked(True)
-        self.chk_same_set = QCheckBox("Same Set")
-        self.chk_not_dup = QCheckBox("Not Duplicate")
         
         row_chk1.addWidget(self.chk_exact)
         row_chk1.addWidget(self.chk_ai_match)
-        row_chk1.addWidget(self.chk_same_set)
-        row_chk1.addWidget(self.chk_not_dup)
+        row_chk1.addWidget(self.chk_dup)
+        row_chk1.addWidget(self.chk_near)
+        row_chk1.addWidget(self.chk_similar)
         
         row_chk2 = QHBoxLayout()
         self.chk_crop = QCheckBox("Similar Crop")
         self.chk_style = QCheckBox("Similar Style")
+        self.chk_person = QCheckBox("Same Person")
+        self.chk_same_set = QCheckBox("Same Set")
         self.chk_other = QCheckBox("Other")
+        self.chk_not_dup = QCheckBox("Not Duplicate")
         
         row_chk2.addWidget(self.chk_crop)
         row_chk2.addWidget(self.chk_style)
+        row_chk2.addWidget(self.chk_person)
+        row_chk2.addWidget(self.chk_same_set)
         row_chk2.addWidget(self.chk_other)
+        row_chk2.addWidget(self.chk_not_dup)
         
         config_layout.addLayout(row_chk1)
         config_layout.addLayout(row_chk2)
@@ -286,12 +297,16 @@ class ClusterViewWidget(QWidget):
         
         criteria = {
             'exact_hash': self.chk_exact.isChecked(),
-            'ai_match': self.chk_ai_match.isChecked(),
+            'new_match': self.chk_ai_match.isChecked(),        # Maps to RelationType.NEW_MATCH
+            'phash_match': self.chk_ai_match.isChecked(),      # Legacy fallback
+            'duplicate': self.chk_dup.isChecked(),
+            'near_duplicate': self.chk_near.isChecked(),
             'similar': self.chk_similar.isChecked(),
-            'same_set': self.chk_same_set.isChecked(),
+            'same_image_set': self.chk_same_set.isChecked(),   # Maps to RelationType.SAME_IMAGE_SET
             'not_duplicate': self.chk_not_dup.isChecked(),
-            'similar_crop': self.chk_crop.isChecked(),
+            'crop_duplicate': self.chk_crop.isChecked(),       # Maps to RelationType.CROP_DUPLICATE
             'similar_style': self.chk_style.isChecked(),
+            'same_person': self.chk_person.isChecked(),
             'other': self.chk_other.isChecked(),
             'ai_similarity': self.chk_ai.isChecked(),
             'ai_threshold': self.spin_ai_thresh.value()
@@ -409,13 +424,13 @@ class ClusterViewWidget(QWidget):
         if cluster['id'] >= 0: return cluster['id']
         
         # It's transient. Create in DB.
-        c_id = self.db.create_cluster(cluster['name'], cluster['target_folder'])
+        c_id = self.cluster_repo.create_cluster(cluster['name'], cluster['target_folder'])
         cluster['id'] = c_id # Update memory
         
         # Persist members
         paths = [f['path'] for f in cluster['files']]
         if paths:
-            self.db.add_cluster_members(c_id, paths)
+            self.cluster_repo.add_cluster_members(c_id, paths)
             
         logger.info(f"Persisted transient cluster '{cluster['name']}' to ID {c_id}")
         return c_id
@@ -426,7 +441,7 @@ class ClusterViewWidget(QWidget):
         
         new_path = self.path_edit.text()
         cluster_id = self.clusters[row]['id']
-        self.db.update_cluster(cluster_id, target_folder=new_path)
+        self.cluster_repo.update_cluster(cluster_id, target_folder=new_path)
         self.clusters[row]['target_folder'] = new_path
             
     def rename_cluster_dialog(self, idx):
@@ -436,7 +451,7 @@ class ClusterViewWidget(QWidget):
         if ok and new_name:
             self.ensure_cluster_persistence(idx) # Ensure it exists
             c_id = self.clusters[idx]['id']
-            self.db.update_cluster(c_id, name=new_name)
+            self.cluster_repo.update_cluster(c_id, name=new_name)
             
             self.clusters[idx]['name'] = new_name
             self.refresh_cluster_list()
@@ -476,16 +491,16 @@ class ClusterViewWidget(QWidget):
                 # If current is transient, delete fails gracefully (0 rows).
                 # But if current IS real, we must remove.
                 if current_cluster['id'] >= 0:
-                    self.db.conn.execute("DELETE FROM cluster_members WHERE cluster_id = ? AND file_path = ?", (current_cluster['id'], path))
+                    self.cluster_repo.remove_cluster_member(current_cluster['id'], path)
                 
                 # Target is guaranteed real now
-                self.db.conn.execute("INSERT OR IGNORE INTO cluster_members (cluster_id, file_path) VALUES (?, ?)", (target_cluster['id'], path))
+                self.cluster_repo.add_cluster_members(target_cluster['id'], [path])
                 moved_count += 1
                 
-        self.db.conn.commit()
+        # self.db.conn.commit() # Repos commit automatically
         
         if moved_count > 0:
-            self.on_cluster_selected(current_idx) # Refresh view
+            self.on_cluster_selected() # Refresh view
             # Optional: Show status
             # self.statusBar().showMessage(f"Moved {moved_count} files", 2000)
 
@@ -494,7 +509,7 @@ class ClusterViewWidget(QWidget):
                                   "Are you sure you want to DELETE ALL CLUSTERS?\nThis action cannot be undone.", 
                                   QMessageBox.Yes | QMessageBox.No)
         if res == QMessageBox.Yes:
-            self.db.delete_all_clusters()
+            self.cluster_repo.delete_all_clusters()
             self.clusters = []
             self.refresh_cluster_list()
             self.image_list.clear() # Clear view
@@ -526,10 +541,10 @@ class ClusterViewWidget(QWidget):
             
             try:
                 # Add to DB cluster_members
-                self.db.add_cluster_members(cluster['id'], [path])
+                self.cluster_repo.add_cluster_members(cluster['id'], [path])
                 
                 # Fetch basic metadata for UI display using existing DB util if possible
-                f_obj = self.db.get_file_by_path(path)
+                f_obj = self.file_repo.get_file_by_path(path)
                 if not f_obj:
                     # Manually construct
                     f_obj = {
@@ -563,7 +578,7 @@ class ClusterViewWidget(QWidget):
         # Create in DB
         idx = len(self.clusters) + 1
         name = f"Cluster {idx} (New)"
-        c_id = self.db.create_cluster(name)
+        c_id = self.cluster_repo.create_cluster(name)
         
         # Add to memory
         new_clust = {'id': c_id, 'name': name, 'target_folder': '', 'files': []}
@@ -616,7 +631,7 @@ class ClusterViewWidget(QWidget):
                 
                 os.makedirs(os.path.dirname(new_path), exist_ok=True)
                 shutil.move(f['path'], new_path)
-                self.db.move_file(f['path'], new_path)
+                self.file_repo.move_file(f['path'], new_path)
                 
                 # Update in memory
                 f['path'] = new_path
@@ -641,7 +656,7 @@ class ClusterViewWidget(QWidget):
             c_id = self.clusters[idx]['id']
             # If persists, delete. If transient, just remove.
             if c_id >= 0:
-                self.db.delete_cluster(c_id)
+                self.cluster_repo.delete_cluster(c_id)
             self.clusters.pop(idx)
             self.refresh_cluster_list()
 
@@ -686,9 +701,9 @@ class ClusterViewWidget(QWidget):
         
         # Remove from DB if persistent
         if c_id >= 0:
-            self.db.connect()
+            # self.db.connect() # Repo handles connect
             for p in paths:
-                self.db.remove_cluster_member(c_id, p)
+                self.cluster_repo.remove_cluster_member(c_id, p)
             
         # Remove from Memory
         cluster['files'] = [f for f in cluster['files'] if f['path'] not in paths]
