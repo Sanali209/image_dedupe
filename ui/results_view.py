@@ -115,8 +115,8 @@ class ComparisonWidget(QWidget):
         
         # --- RIGHT PANEL (CONTROLS) ---
         self.panel_controls = QWidget()
-        self.panel_controls.setMinimumWidth(450)  # Fixed minimum width
-        self.panel_controls.setMaximumWidth(450)  # Fixed maximum width
+        self.panel_controls.setMinimumWidth(500)  # Fixed minimum width
+        self.panel_controls.setMaximumWidth(500)  # Fixed maximum width
         ctrl_layout = QVBoxLayout(self.panel_controls)
         ctrl_layout.setAlignment(Qt.AlignTop)
         
@@ -184,25 +184,7 @@ class ComparisonWidget(QWidget):
         self.grid.setHorizontalSpacing(15)
         self.grid.setVerticalSpacing(15)
         
-        # -- Column 0: Names --
-        self.lbl_name_top = QLabel()
-        self.lbl_name_top.setWordWrap(True)
-        self.lbl_name_top.setStyleSheet("font-weight: bold;")
-        self.lbl_name_bottom = QLabel()
-        self.lbl_name_bottom.setWordWrap(True)
-        self.lbl_name_bottom.setStyleSheet("font-weight: bold;")
-        
-        vbox_names = QVBoxLayout()
-        vbox_names.addWidget(QLabel("<b>Top Name:</b>"))
-        vbox_names.addWidget(self.lbl_name_top)
-        vbox_names.addSpacing(10)
-        vbox_names.addWidget(QLabel("<b>Bottom Name:</b>"))
-        vbox_names.addWidget(self.lbl_name_bottom)
-        w_names = QWidget(); w_names.setLayout(vbox_names)
-        
-        self.grid.addWidget(w_names, 0, 0)
-
-        # -- Column 1: Sizes --
+        # -- Column 0: Sizes --
         self.lbl_size_top = QLabel()
         self.lbl_size_bottom = QLabel()
         self.btn_del_size = QPushButton("Delete Smaller")
@@ -217,9 +199,9 @@ class ComparisonWidget(QWidget):
         vbox_sizes.addWidget(self.btn_del_size)
         w_sizes = QWidget(); w_sizes.setLayout(vbox_sizes)
         
-        self.grid.addWidget(w_sizes, 0, 1)
+        self.grid.addWidget(w_sizes, 0, 0)
 
-        # -- Column 2: Dimensions --
+        # -- Column 1: Dimensions --
         self.lbl_res_top = QLabel()
         self.lbl_res_bottom = QLabel()
         self.btn_del_res = QPushButton("Delete Lower Res")
@@ -234,9 +216,9 @@ class ComparisonWidget(QWidget):
         vbox_res.addWidget(self.btn_del_res)
         w_res = QWidget(); w_res.setLayout(vbox_res)
         
-        self.grid.addWidget(w_res, 0, 2)
+        self.grid.addWidget(w_res, 0, 1)
         
-        # -- Column 3: Delete Buttons --
+        # -- Column 2: Delete Buttons --
         self.btn_del_top = QPushButton("Delete Top")
         self.btn_del_top.setStyleSheet("background-color: #552222; font-weight: bold; min-height: 30px;")
         self.btn_del_top.clicked.connect(self.action_delete_left.emit)
@@ -252,26 +234,40 @@ class ComparisonWidget(QWidget):
         vbox_del.addWidget(self.btn_del_bottom)
         w_del = QWidget(); w_del.setLayout(vbox_del)
         
-        self.grid.addWidget(w_del, 0, 3)
+        self.grid.addWidget(w_del, 0, 2)
 
-        # -- Row 1: Paths --
+        # -- File Details (Names + Paths) --
+        self.lbl_name_top = QLabel()
+        self.lbl_name_top.setWordWrap(True)
+        self.lbl_name_top.setStyleSheet("font-weight: bold;")
+        
+        self.lbl_name_bottom = QLabel()
+        self.lbl_name_bottom.setWordWrap(True)
+        self.lbl_name_bottom.setStyleSheet("font-weight: bold;")
+
         self.lbl_folder_top = QLabel()
         self.lbl_folder_top.setStyleSheet("color: #aaa;")
         self.lbl_folder_top.setWordWrap(True)
-        
         self.lbl_folder_bottom = QLabel()
         self.lbl_folder_bottom.setStyleSheet("color: #aaa;")
         self.lbl_folder_bottom.setWordWrap(True)
         
-        vbox_paths = QVBoxLayout()
-        vbox_paths.addWidget(QLabel("<b>Top Path:</b>"))
-        vbox_paths.addWidget(self.lbl_folder_top)
-        vbox_paths.addSpacing(5)
-        vbox_paths.addWidget(QLabel("<b>Bottom Path:</b>"))
-        vbox_paths.addWidget(self.lbl_folder_bottom)
-        w_paths = QWidget(); w_paths.setLayout(vbox_paths)
+        vbox_details = QVBoxLayout()
         
-        self.grid.addWidget(w_paths, 1, 0, 1, 4) # Span full width
+        # Top Group
+        vbox_details.addWidget(QLabel("<b>Top Image:</b>"))
+        vbox_details.addWidget(self.lbl_name_top)
+        vbox_details.addWidget(self.lbl_folder_top)
+        vbox_details.addSpacing(15)
+        
+        # Bottom Group
+        vbox_details.addWidget(QLabel("<b>Bottom Image:</b>"))
+        vbox_details.addWidget(self.lbl_name_bottom)
+        vbox_details.addWidget(self.lbl_folder_bottom)
+        
+        w_details = QWidget(); w_details.setLayout(vbox_details)
+        
+        self.grid.addWidget(w_details, 1, 0, 1, 3) # Span full width (3 cols)
 
         ctrl_layout.addLayout(self.grid)
         

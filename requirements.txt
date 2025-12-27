@@ -11,3 +11,4 @@ torch
 torchvision
 humanize
 pydantic
+torch-directml

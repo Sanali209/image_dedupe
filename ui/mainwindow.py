@@ -77,6 +77,19 @@ class MainWindow(QMainWindow):
         self.act_cluster_view.triggered.connect(lambda: self.stack.setCurrentIndex(3))
         view_menu.addAction(self.act_cluster_view)
 
+        # Edit Menu
+        edit_menu = menubar.addMenu("Edit")
+        
+        act_settings = QAction("Settings...", self)
+        act_settings.triggered.connect(self.open_settings)
+        edit_menu.addAction(act_settings)
+
+    def open_settings(self):
+        """Open the settings dialog."""
+        from .settings_dialog import SettingsDialog
+        dialog = SettingsDialog(self)
+        dialog.exec()
+
     def toggle_ignored(self, checked):
         self.session.include_ignored = checked
         if self.stack.currentIndex() == 2:

@@ -38,19 +38,19 @@ class PHashEngine(BaseEngine):
         skipped = 0
         total = len(files)
         
-        # We can fetch all DB files once or check one by one. 
-        # Check one by one is slow for 100k files. 
-        # But 'files' input might be small or large.
-        # Let's trust DB manager cache or just loop. 
-        # ScanWorker originally did one-by-one check (line 87 in step 431).
-        
         logger.info(f"PHashEngine: Checking {total} files against DB...")
+        
+        # Batch fetch all existing files from DB (1 query instead of N)
+        logger.info("PHashEngine: Fetching existing file records...")
+        all_db_files = self.db_manager.get_all_files()
+        db_file_map = {row['path']: row for row in all_db_files}
+        logger.info(f"PHashEngine: Found {len(db_file_map)} existing records")
         
         for i, path in enumerate(files):
             try:
                 stat = os.stat(path)
                 mtime = stat.st_mtime
-                row = self.db_manager.get_file_by_path(path)
+                row = db_file_map.get(path)
                 if row and row['last_modified'] == mtime and row['phash']:
                     skipped += 1
                 else:
@@ -59,11 +59,10 @@ class PHashEngine(BaseEngine):
                 skipped += 1 # Skip missing/locked
                 
             if i % 1000 == 0 and progress_callback:
-                # We can emit progress for skipped files too?
-                # ScanWorker expects total progress.
                 progress_callback(i, total)
                 
-        if progress_callback: progress_callback(skipped, total)
+        if progress_callback: progress_callback(total, total)
+        logger.info(f"PHashEngine: {skipped} files up-to-date, {len(tasks)} need hashing")
         
         if not tasks:
             logger.info("PHashEngine: All files up to date.")
@@ -74,19 +73,37 @@ class PHashEngine(BaseEngine):
         cpu_count = max(1, multiprocessing.cpu_count() - 1)
         count = skipped
         
+        # Batch collection for efficient DB writes
+        batch_results = []
+        batch_size = 1000
+        
+        # Optimize IPC with larger chunksize
+        chunk_size = max(1, len(tasks) // (cpu_count * 4))
+        
         with multiprocessing.Pool(processes=cpu_count) as pool:
-            for result in pool.imap_unordered(calculate_hash, tasks):
+            for result in pool.imap_unordered(calculate_hash, tasks, chunksize=chunk_size):
                 path, hash_val, size, w, h, mtime, err = result
                 
                 if hash_val is not None:
-                    # Upsert to DB
-                    self.db_manager.upsert_file(path, hash_val, size, w, h, mtime)
+                    batch_results.append((path, hash_val, size, w, h, mtime))
+                    
+                    # Flush batch to DB
+                    if len(batch_results) >= batch_size:
+                        self.db_manager.upsert_files_batch(batch_results)
+                        batch_results.clear()
                 elif err:
                     logger.error(f"Error hashing {path}: {err}")
                 
                 count += 1
-                if progress_callback:
+                if count % 1000 == 0 and progress_callback:
                     progress_callback(count, total)
+        
+        # Flush remaining
+        if batch_results:
+            self.db_manager.upsert_files_batch(batch_results)
+        
+        if progress_callback:
+            progress_callback(total, total)
 
     def find_duplicates(self, files=None, threshold=5, root_paths=None, include_ignored=False, progress_callback=None):
         if files is None:
@@ -118,15 +135,32 @@ class PHashEngine(BaseEngine):
 
         hash_groups = list(buckets.items())
         
-        # 2. Fuzzy Matching with BK-Tree
+        # 2. Fuzzy Matching with BK-Tree (with caching)
         def hamming(h1, h2):
             val1 = int(h1, 16)
             val2 = int(h2, 16)
             return bin(val1 ^ val2).count('1')
 
         tree = BKTree(hamming)
-        for h, _ in hash_groups:
-            tree.add(h, h)
+        
+        # Try to load cached tree
+        cache_path = "bktree_cache.pkl"
+        cache_valid = False
+        if tree.load(cache_path):
+            # Validate cache - check if hash count matches
+            if tree.size() == len(hash_groups):
+                cache_valid = True
+                logger.info(f"BKTree cache valid ({tree.size()} hashes)")
+            else:
+                logger.info(f"BKTree cache stale: {tree.size()} vs {len(hash_groups)} hashes, rebuilding...")
+                tree = BKTree(hamming)
+        
+        if not cache_valid:
+            logger.info(f"Building BKTree with {len(hash_groups)} hashes...")
+            for h, _ in hash_groups:
+                tree.add(h, h)
+            tree.save(cache_path)
+
 
         # Union-Find
         parent = {h: h for h, _ in hash_groups}
@@ -142,7 +176,7 @@ class PHashEngine(BaseEngine):
 
         # Query
         total = len(hash_groups)
-        log_interval = max(1, total // 10)
+        log_interval = 1000
         
         found_pairs = []
 

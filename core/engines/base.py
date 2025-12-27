@@ -68,25 +68,72 @@ class BaseAIEngine(BaseEngine):
     def initialize(self):
         self.load_model()
 
-    def index_files(self, files, progress_callback=None):
+    def get_batch_embeddings(self, image_paths, batch_size=8):
+        """
+        Generate embeddings for multiple images in batches.
+        Override in subclass for GPU-optimized batch processing.
+        
+        Default implementation falls back to sequential get_embedding() calls.
+        
+        Args:
+            image_paths: List of image file paths
+            batch_size: Number of images to process at once
+            
+        Returns:
+            Dict mapping path -> embedding list
+        """
+        results = {}
+        for path in image_paths:
+            emb = self.get_embedding(path)
+            if emb:
+                results[path] = emb
+        return results
+
+    def index_files(self, files, progress_callback=None, batch_size=None):
+        """
+        Index files using batch embedding extraction for optimal GPU utilization.
+        
+        Args:
+            files: List of file paths to process
+            progress_callback: function(current, total)
+            batch_size: Number of images to process in each GPU batch (uses config if None)
+        """
         if not self.model or not self.vector_db.client or not self.collection_name:
             logger.error(f"{self.engine_name or 'AI'} Engine not ready or configured.")
             return
 
-        logger.info(f"{self.engine_name}: Indexing {len(files)} files...")
+        # Get batch size from config if not specified
+        if batch_size is None:
+            from core.gpu_config import GPUConfig
+            config = GPUConfig()
+            # Map engine name to config key
+            engine_key = self.engine_name.lower().replace('-directml', '').replace('v3 (small)', '').strip()
+            if 'mobilenet' in engine_key.lower():
+                engine_key = 'mobilenet'
+            elif 'clip' in engine_key.lower():
+                engine_key = 'clip'
+            elif 'blip' in engine_key.lower():
+                engine_key = 'blip'
+            batch_size = config.get_batch_size(engine_key)
+
+        logger.info(f"{self.engine_name}: Indexing {len(files)} files with batch_size={batch_size}...")
         
-        updates_ids = []
-        updates_vecs = []
-        updates_metas = []
+        # Pre-fetch all DB records to avoid N+1 queries
+        logger.info(f"{self.engine_name}: Fetching existing DB records...")
+        all_db_files = self.db_manager.get_all_files()
+        db_file_map = {row['path']: row for row in all_db_files}
+        logger.info(f"{self.engine_name}: Found {len(db_file_map)} existing records")
         
-        count = 0
         total = len(files)
+        processed = 0
         
+        # Process in larger chunks for ChromaDB existence check
         chunk_size = 1000
-        for i in range(0, total, chunk_size):
-            chunk = files[i:i+chunk_size]
+        
+        for chunk_start in range(0, total, chunk_size):
+            chunk = files[chunk_start:chunk_start + chunk_size]
             
-            # Batch check Chroma for existing
+            # Batch check Chroma for existing embeddings
             try:
                 existing_docs = self.vector_db.collections[self.collection_name].get(ids=chunk, include=[])
                 existing_ids = set(existing_docs['ids']) if existing_docs else set()
@@ -94,64 +141,72 @@ class BaseAIEngine(BaseEngine):
                 logger.error(f"Chroma batch check error: {e}")
                 existing_ids = set()
 
+            # Identify files that need processing
+            paths_to_process = []
             for path in chunk:
-                if not os.path.exists(path): 
-                    count += 1
-                    if progress_callback: progress_callback(count, total)
+                if not os.path.exists(path):
+                    processed += 1
                     continue
-                
-                # Check ChromaDB
+                    
                 if path in existing_ids:
-                    # Ensure in SQLite if missing
-                    # We do this to ensure the file table is populated even if vector exists
-                    row = self.db_manager.get_file_by_path(path)
-                    if not row:
-                         try:
+                    # Already has embedding, ensure SQLite record exists
+                    if path not in db_file_map:
+                        try:
                             with Image.open(path) as img:
-                                img = img.convert('RGB')
                                 w, h = img.size
                                 stat = os.stat(path)
                                 self.db_manager.upsert_file(path, None, stat.st_size, w, h, stat.st_mtime)
-                         except: pass
-                         
-                    count += 1
-                    if progress_callback: progress_callback(count, total)
+                        except:
+                            pass
+                    processed += 1
                     continue
                 
-                # Process New File
+                paths_to_process.append(path)
+            
+            # Process new files in batches for GPU efficiency
+            for batch_start in range(0, len(paths_to_process), batch_size):
+                batch_paths = paths_to_process[batch_start:batch_start + batch_size]
+                
+                # Update SQLite records first
+                for path in batch_paths:
+                    try:
+                        stat = os.stat(path)
+                        with Image.open(path) as img:
+                            w, h = img.size
+                            self.db_manager.upsert_file(path, None, stat.st_size, w, h, stat.st_mtime)
+                    except Exception as e:
+                        logger.warning(f"Error updating DB for {path}: {e}")
+                
+                # Batch extract embeddings (GPU-optimized)
                 try:
-                    # Update SQLite first
-                    stat = os.stat(path)
-                    # We might open image twice (here and in get_embedding), but get_embedding usually needs specific preprocessing
-                    # so we'll leave it to get_embedding or just open here for metadata.
-                    # Optimization: create a helper to get metadata without full read if possible, but Image.open is lazy.
-                    with Image.open(path) as img:
-                        w, h = img.size
-                        self.db_manager.upsert_file(path, None, stat.st_size, w, h, stat.st_mtime)
-                    
-                    emb = self.get_embedding(path)
-                    
-                    if emb:
-                        updates_ids.append(path)
-                        updates_vecs.append(emb)
-                        updates_metas.append({"engine": self.engine_name})
-                    
+                    batch_embeddings = self.get_batch_embeddings(batch_paths, batch_size=batch_size)
                 except Exception as e:
-                    logger.warning(f"Error processing {path}: {e}")
+                    logger.warning(f"Batch embedding error: {e}, falling back to sequential")
+                    batch_embeddings = {}
+                    for p in batch_paths:
+                        emb = self.get_embedding(p)
+                        if emb:
+                            batch_embeddings[p] = emb
                 
-                count += 1
-                if progress_callback: progress_callback(count, total)
+                # Prepare ChromaDB upsert
+                if batch_embeddings:
+                    ids = list(batch_embeddings.keys())
+                    vecs = list(batch_embeddings.values())
+                    metas = [{"engine": self.engine_name} for _ in ids]
+                    
+                    self.vector_db.upsert(self.collection_name, ids, vecs, metas)
                 
-                if len(updates_ids) >= 50:
-                    self.vector_db.upsert(self.collection_name, updates_ids, updates_vecs, updates_metas)
-                    updates_ids, updates_vecs, updates_metas = [], [], []
+                processed += len(batch_paths)
                 
-            # Flush remaining in chunk loop if needed? No, logic above handles 50 batch. 
-            # But we need to handle leftovers at end of outer loop.
-            pass
+                # Progress callback
+                if progress_callback:
+                    progress_callback(processed, total)
+            
+            # Handle remaining files in chunk that were skipped
+            if progress_callback:
+                progress_callback(processed, total)
 
-        if updates_ids:
-            self.vector_db.upsert(self.collection_name, updates_ids, updates_vecs, updates_metas)
+        logger.info(f"{self.engine_name}: Indexing complete. Processed {processed}/{total} files.")
 
 
     def find_duplicates(self, files=None, threshold=0.1, root_paths=None, include_ignored=False, progress_callback=None):
@@ -186,7 +241,7 @@ class BaseAIEngine(BaseEngine):
                 parent[r1] = r2
 
         total = len(valid_files)
-        log_interval = max(1, total // 20)
+        log_interval = 1000
 
         found_pairs = []
 
@@ -198,19 +253,19 @@ class BaseAIEngine(BaseEngine):
         
         # Since we are iterating valid_files (paths), let's build a map
         path_to_id = {}
-        # TODO: Improve this N+1 query performance later or batch fetch
-        # For now, let's fetch ID for the current batch or just use slow lookup?
-        # Actually, valid_files matches 'roots'.
-        # Let's fetch all IDs in roots once.
         
         all_files_in_roots = self.file_repo.get_files_in_roots(root_paths)
         path_to_id = {f['path']: f['id'] for f in all_files_in_roots}
         
+        # Batch fetch all embeddings upfront (avoid N+1 queries)
+        logger.info(f"{self.engine_name}: Pre-fetching embeddings for {len(valid_files)} files...")
+        all_embeddings = self.vector_db.batch_get(self.collection_name, valid_files)
+        logger.info(f"{self.engine_name}: Fetched {len(all_embeddings)} embeddings")
+        
         for i, path in enumerate(valid_files):
-            data = self.vector_db.collections[self.collection_name].get(ids=[path], include=['embeddings'])
-            if not data or data['embeddings'] is None or len(data['embeddings']) == 0: continue
-            
-            vec = data['embeddings'][0]
+            vec = all_embeddings.get(path)
+            if vec is None:
+                continue
             
             results = self.vector_db.query(self.collection_name, query_embeddings=[vec], n_results=20)
             
@@ -256,6 +311,7 @@ class BaseAIEngine(BaseEngine):
             if i % log_interval == 0:
                 logger.info(f"{self.engine_name} Matching Progress: {i}/{total}")
                 if progress_callback: progress_callback(i, total)
+
 
         # Persist found pairs
         if found_pairs:

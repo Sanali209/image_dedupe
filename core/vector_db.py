@@ -85,3 +85,34 @@ class VectorStore:
         if not self.client: return 0
         col = self.collections.get(collection_name)
         return col.count() if col else 0
+
+    def batch_get(self, collection_name, ids, batch_size=10000):
+        """
+        Batch retrieve embeddings for multiple IDs.
+        More efficient than individual get() calls.
+        
+        Args:
+            collection_name: Name of the collection
+            ids: List of IDs to retrieve
+            batch_size: Size of each batch
+            
+        Returns:
+            Dict mapping id -> embedding
+        """
+        if not self.client: return {}
+        col = self.collections.get(collection_name)
+        if not col: return {}
+        
+        result = {}
+        try:
+            for i in range(0, len(ids), batch_size):
+                batch = ids[i:i+batch_size]
+                data = col.get(ids=batch, include=['embeddings'])
+                # Use explicit length checks to avoid numpy array truth value issues
+                if data and len(data.get('ids', [])) > 0 and len(data.get('embeddings', [])) > 0:
+                    for doc_id, emb in zip(data['ids'], data['embeddings']):
+                        result[doc_id] = emb
+        except Exception as e:
+            logger.error(f"ChromaDB batch_get error: {e}")
+            
+        return result

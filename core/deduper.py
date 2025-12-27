@@ -13,7 +13,7 @@ from typing import List, Optional, Any, Dict, Union, Callable
 from loguru import logger
 from .database import DatabaseManager
 from .engines.phash import PHashEngine
-from .engines.clip import CLIPEngine
+from .engines.directml_clip import DirectMLCLIPEngine as CLIPEngine
 from .engines.blip import BLIPEngine
 from .engines.mobilenet import MobileNetEngine
 from .cluster_services import GraphBuilder, ClusterReconciler

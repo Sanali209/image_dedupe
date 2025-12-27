@@ -3,3 +3,5 @@
 /test_dedup.db
 *.pyc
 /chroma_db
+*.pyc
+/ui/__pycache__

@@ -32,6 +32,12 @@ class DatabaseManager:
         self.connect()
         cursor = self.conn.cursor()
         
+        # Performance Pragmas for large datasets
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA cache_size=-64000")  # 64MB cache
+        cursor.execute("PRAGMA temp_store=MEMORY")
+        
         # Files table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS files (
@@ -85,6 +91,23 @@ class DatabaseManager:
             )
         ''')
         
+        # Vector Index Status Table (tracks which files have AI embeddings)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS vector_index_status (
+                path TEXT NOT NULL,
+                engine TEXT NOT NULL,
+                indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (path, engine)
+            )
+        ''')
+        
+        # Performance Indexes for 1M+ scale
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_files_phash ON files(phash)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_files_last_modified ON files(last_modified)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_relations_type ON file_relations(relation_type)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_cluster_members_path ON cluster_members(file_path)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_vector_status_engine ON vector_index_status(engine)')
+        
         self.conn.commit()
 
 
@@ -106,6 +129,35 @@ class DatabaseManager:
         except sqlite3.Error as e:
             print(f"Database error: {e}")
 
+    def upsert_files_batch(self, file_data, batch_size=5000):
+        """
+        Batch insert/update file records for better performance.
+        
+        Args:
+            file_data: List of tuples (path, phash, size, width, height, mtime)
+            batch_size: Number of records per batch commit
+        """
+        if not file_data:
+            return
+            
+        self.connect()
+        try:
+            for i in range(0, len(file_data), batch_size):
+                batch = file_data[i:i+batch_size]
+                self.conn.executemany('''
+                    INSERT INTO files (path, phash, file_size, width, height, last_modified)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(path) DO UPDATE SET
+                        phash=excluded.phash,
+                        file_size=excluded.file_size,
+                        width=excluded.width,
+                        height=excluded.height,
+                        last_modified=excluded.last_modified
+                ''', batch)
+                self.conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"Batch upsert error: {e}")
+
     def get_file_by_path(self, path):
         self.connect()
         cursor = self.conn.execute("SELECT * FROM files WHERE path = ?", (path,))
@@ -115,6 +167,68 @@ class DatabaseManager:
         self.connect()
         cursor = self.conn.execute("SELECT * FROM files")
         return cursor.fetchall()
+
+    def iter_files_chunked(self, chunk_size=50000):
+        """
+        Yield files in chunks for memory-efficient processing.
+        Use this for 1M+ file collections to avoid loading all into RAM.
+        
+        Args:
+            chunk_size: Number of files per chunk
+            
+        Yields:
+            List of sqlite3.Row objects
+        """
+        self.connect()
+        offset = 0
+        while True:
+            cursor = self.conn.execute(
+                "SELECT * FROM files LIMIT ? OFFSET ?", 
+                (chunk_size, offset)
+            )
+            rows = cursor.fetchall()
+            if not rows:
+                break
+            yield rows
+            offset += chunk_size
+
+    def get_file_count(self):
+        """Return total file count without loading all data."""
+        self.connect()
+        cursor = self.conn.execute("SELECT COUNT(*) FROM files")
+        return cursor.fetchone()[0]
+
+    # --- Vector Index Status Methods ---
+    
+    def get_indexed_paths(self, engine):
+        """Get set of paths already indexed by this engine."""
+        self.connect()
+        cursor = self.conn.execute(
+            "SELECT path FROM vector_index_status WHERE engine = ?",
+            (engine,)
+        )
+        return {row[0] for row in cursor.fetchall()}
+    
+    def mark_paths_indexed(self, paths, engine):
+        """Mark paths as indexed by engine (batch operation)."""
+        if not paths:
+            return
+        self.connect()
+        data = [(p, engine) for p in paths]
+        self.conn.executemany(
+            "INSERT OR REPLACE INTO vector_index_status (path, engine) VALUES (?, ?)",
+            data
+        )
+        self.conn.commit()
+    
+    def clear_vector_index_status(self, engine=None):
+        """Clear index status for an engine or all engines."""
+        self.connect()
+        if engine:
+            self.conn.execute("DELETE FROM vector_index_status WHERE engine = ?", (engine,))
+        else:
+            self.conn.execute("DELETE FROM vector_index_status")
+        self.conn.commit()
 
     def get_files_in_roots(self, roots):
         """Retrieve files that reside within the specified root directories."""
@@ -292,3 +406,101 @@ class DatabaseManager:
         self.connect()
         cursor = self.conn.execute("SELECT file_path FROM cluster_members WHERE cluster_id = ?", (cluster_id,))
         return [row['file_path'] for row in cursor.fetchall()]
+
+    # --- Maintenance Methods ---
+
+    def cleanup_missing_files(self, progress_callback=None):
+        """
+        Check all files in DB and remove those that no longer exist on disk.
+        Returns number of removed files.
+        """
+        self.connect()
+        # count total for progress
+        total_files = self.get_file_count()
+        if total_files == 0:
+            return 0
+            
+        removed_count = 0
+        processed = 0
+        
+        # Use existing chunk iterator
+        chunk_iter = self.iter_files_chunked(chunk_size=5000)
+        paths_to_remove = []
+        
+        for chunk in chunk_iter:
+            for row in chunk:
+                path = row['path']
+                if not os.path.exists(path):
+                    paths_to_remove.append(path)
+            
+            processed += len(chunk)
+            if progress_callback:
+                progress_callback(processed, total_files)
+                
+            # Batch removal to keep list size manageable
+            if len(paths_to_remove) > 1000:
+                self._remove_files_batch(paths_to_remove)
+                removed_count += len(paths_to_remove)
+                paths_to_remove = []
+        
+        # Remove remaining
+        if paths_to_remove:
+            self._remove_files_batch(paths_to_remove)
+            removed_count += len(paths_to_remove)
+            
+        return removed_count
+
+    def _remove_files_batch(self, paths):
+        if not paths: return
+        self.connect()
+        # chunk the deletions too because sqlite has variable limit
+        chunk_size = 900
+        for i in range(0, len(paths), chunk_size):
+            batch = paths[i:i+chunk_size]
+            placeholders = ','.join(['?'] * len(batch))
+            self.conn.execute(f"DELETE FROM files WHERE path IN ({placeholders})", batch)
+        self.conn.commit()
+
+    def cleanup_orphans(self):
+        """Remove records in other tables that reference non-existent files."""
+        self.connect()
+        stats = {}
+        
+        # 1. Vector Index Status
+        c = self.conn.execute("DELETE FROM vector_index_status WHERE path NOT IN (SELECT path FROM files)")
+        stats['vector_status_removed'] = c.rowcount
+        
+        # 2. Cluster Members
+        c = self.conn.execute("DELETE FROM cluster_members WHERE file_path NOT IN (SELECT path FROM files)")
+        stats['cluster_members_removed'] = c.rowcount
+        
+        # 3. File Relations
+        # This is ID based.
+        c = self.conn.execute('''
+            DELETE FROM file_relations 
+            WHERE id1 NOT IN (SELECT id FROM files) 
+               OR id2 NOT IN (SELECT id FROM files)
+        ''')
+        stats['relations_removed'] = c.rowcount
+        
+        # 4. Empty Clusters
+        c = self.conn.execute('''
+            DELETE FROM clusters 
+            WHERE id NOT IN (SELECT DISTINCT cluster_id FROM cluster_members)
+        ''')
+        stats['empty_clusters_removed'] = c.rowcount
+        
+        self.conn.commit()
+        return stats
+
+    def optimize_database(self):
+        """Run VACUUM and ANALYZE."""
+        self.connect()
+        # VACUUM cannot be run from within a transaction usually, autocommit needed?
+        # sqlite3 api handles this generally if isolation_level is correct, but let's try.
+        try:
+            self.conn.execute("VACUUM")
+            self.conn.execute("ANALYZE")
+        except sqlite3.Error as e:
+            logger.error(f"Optimization error: {e}")
+
