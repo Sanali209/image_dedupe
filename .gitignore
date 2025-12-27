@@ -5,3 +5,5 @@
 /chroma_db
 *.pyc
 /ui/__pycache__
+*.db-shm
+*.db-wal
