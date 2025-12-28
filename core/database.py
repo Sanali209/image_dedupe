@@ -44,6 +44,10 @@ class DatabaseManager:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 path TEXT UNIQUE NOT NULL,
                 phash TEXT,
+                phash_c1 INTEGER, -- 16-bit chunk 1
+                phash_c2 INTEGER, -- 16-bit chunk 2
+                phash_c3 INTEGER, -- 16-bit chunk 3
+                phash_c4 INTEGER, -- 16-bit chunk 4
                 file_size INTEGER,
                 width INTEGER,
                 height INTEGER,
@@ -103,6 +107,10 @@ class DatabaseManager:
         
         # Performance Indexes for 1M+ scale
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_files_phash ON files(phash)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_files_phash_c1 ON files(phash_c1)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_files_phash_c2 ON files(phash_c2)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_files_phash_c3 ON files(phash_c3)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_files_phash_c4 ON files(phash_c4)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_files_last_modified ON files(last_modified)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_relations_type ON file_relations(relation_type)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_cluster_members_path ON cluster_members(file_path)')
@@ -115,19 +123,40 @@ class DatabaseManager:
         """Insert or update a file record."""
         self.connect()
         try:
+            # Extract chunks for MIH if phash is present
+            c1, c2, c3, c4 = self._extract_phash_chunks(phash)
+            
             self.conn.execute('''
-                INSERT INTO files (path, phash, file_size, width, height, last_modified)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO files (path, phash, phash_c1, phash_c2, phash_c3, phash_c4, file_size, width, height, last_modified)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(path) DO UPDATE SET
                     phash=excluded.phash,
+                    phash_c1=excluded.phash_c1,
+                    phash_c2=excluded.phash_c2,
+                    phash_c3=excluded.phash_c3,
+                    phash_c4=excluded.phash_c4,
                     file_size=excluded.file_size,
                     width=excluded.width,
                     height=excluded.height,
                     last_modified=excluded.last_modified
-            ''', (path, phash, size, width, height, mtime))
+            ''', (path, phash, c1, c2, c3, c4, size, width, height, mtime))
             self.conn.commit()
         except sqlite3.Error as e:
-            print(f"Database error: {e}")
+            logger.error(f"Database error: {e}")
+
+    def _extract_phash_chunks(self, phash_str):
+        """Split 64-bit phash (hex string) into four 16-bit integer chunks."""
+        if not phash_str or len(phash_str) != 16:
+            return None, None, None, None
+        try:
+            val = int(phash_str, 16)
+            c1 = (val >> 48) & 0xFFFF
+            c2 = (val >> 32) & 0xFFFF
+            c3 = (val >> 16) & 0xFFFF
+            c4 = val & 0xFFFF
+            return c1, c2, c3, c4
+        except ValueError:
+            return None, None, None, None
 
     def upsert_files_batch(self, file_data, batch_size=5000):
         """
@@ -135,20 +164,29 @@ class DatabaseManager:
         
         Args:
             file_data: List of tuples (path, phash, size, width, height, mtime)
-            batch_size: Number of records per batch commit
         """
         if not file_data:
             return
             
         self.connect()
         try:
-            for i in range(0, len(file_data), batch_size):
-                batch = file_data[i:i+batch_size]
+            prepared_data = []
+            for item in file_data:
+                path, phash, size, width, height, mtime = item
+                c1, c2, c3, c4 = self._extract_phash_chunks(phash)
+                prepared_data.append((path, phash, c1, c2, c3, c4, size, width, height, mtime))
+
+            for i in range(0, len(prepared_data), batch_size):
+                batch = prepared_data[i:i+batch_size]
                 self.conn.executemany('''
-                    INSERT INTO files (path, phash, file_size, width, height, last_modified)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO files (path, phash, phash_c1, phash_c2, phash_c3, phash_c4, file_size, width, height, last_modified)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(path) DO UPDATE SET
                         phash=excluded.phash,
+                        phash_c1=excluded.phash_c1,
+                        phash_c2=excluded.phash_c2,
+                        phash_c3=excluded.phash_c3,
+                        phash_c4=excluded.phash_c4,
                         file_size=excluded.file_size,
                         width=excluded.width,
                         height=excluded.height,
@@ -165,7 +203,44 @@ class DatabaseManager:
 
     def get_all_files(self):
         self.connect()
-        cursor = self.conn.execute("SELECT * FROM files")
+        self.conn.row_factory = sqlite3.Row
+        return self.conn.execute('SELECT * FROM files').fetchall()
+
+    def get_phash_candidates(self, id_list=None):
+        """
+        Find candidate pairs sharing at least one 16-bit phash chunk (MIH).
+        
+        Args:
+            id_list: Optional list of IDs to restrict search (not implemented yet).
+            
+        Returns:
+            List of tuples (id1, id2, phash1, phash2)
+        """
+        self.connect()
+        # self.conn.row_factory = None  # Faster for many results
+        
+        # A full self-join on 1M files with OR can be slow.
+        # It's better to use 4 separate joins or a UNION if needed, 
+        # but SQLite handles small ORs okay if indexed.
+        # We also filter f1.id < f2.id to get each pair once.
+        
+        query = '''
+            SELECT f1.id, f2.id, f1.phash, f2.phash
+            FROM files f1
+            JOIN files f2 ON (
+                f1.phash_c1 = f2.phash_c1 OR 
+                f1.phash_c2 = f2.phash_c2 OR 
+                f1.phash_c3 = f2.phash_c3 OR 
+                f1.phash_c4 = f2.phash_c4
+            )
+            WHERE f1.id < f2.id
+        '''
+        
+        try:
+            return self.conn.execute(query).fetchall()
+        except sqlite3.Error as e:
+            logger.error(f"Candidate retrieval error: {e}")
+            return []
         return cursor.fetchall()
 
     def iter_files_chunked(self, chunk_size=50000):

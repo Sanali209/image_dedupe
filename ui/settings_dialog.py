@@ -57,8 +57,15 @@ class SettingsDialog(QDialog):
         
         # Info label
         info_label = QLabel("Larger batches = faster but more GPU memory.\nReduce if you get out-of-memory errors.")
-        info_label.setStyleSheet("color: gray; font-size: 11px;")
+        info_label.setStyleSheet("color: #64B5F6; font-size: 11px;")
         batch_layout.addRow(info_label)
+
+        # PHash batch size
+        self.spin_phash = QSpinBox()
+        self.spin_phash.setRange(1, 1024)
+        self.spin_phash.setValue(32)
+        self.spin_phash.setToolTip("PHash is lightweight. Recommended: 32-128")
+        batch_layout.addRow("PHash Batch Size:", self.spin_phash)
         
         # CLIP batch size
         self.spin_clip = QSpinBox()
@@ -129,6 +136,7 @@ class SettingsDialog(QDialog):
         
         # Batch sizes
         batch_sizes = self.config.get_all_batch_sizes()
+        self.spin_phash.setValue(batch_sizes.get('phash', 32))
         self.spin_clip.setValue(batch_sizes.get('clip', 8))
         self.spin_blip.setValue(batch_sizes.get('blip', 8))
         self.spin_mobilenet.setValue(batch_sizes.get('mobilenet', 16))
@@ -142,11 +150,15 @@ class SettingsDialog(QDialog):
         if device_id == "auto":
             self.lbl_device_info.setText("Automatically selects: DirectML → CUDA → CPU")
         elif device_id.startswith("directml"):
-            self.lbl_device_info.setText("DirectML: Works with Intel, AMD, and some NVIDIA GPUs")
+            self.lbl_device_info.setText("DirectML: Universal GPU acceleration (Intel/AMD/NVIDIA)")
         elif device_id.startswith("cuda"):
-            self.lbl_device_info.setText("CUDA: Native NVIDIA GPU acceleration (fastest for NVIDIA)")
+            self.lbl_device_info.setText("CUDA: Native NVIDIA optimization (Recommended for GeForce)")
         else:
-            self.lbl_device_info.setText("No GPU acceleration - slowest option")
+            self.lbl_device_info.setText("No GPU acceleration - strictly CPU (Slowest)")
+            
+        # Add a subtle hint about VRAM
+        vram_hint = "\nTip: 800k+ images require ~1-2GB VRAM during matching."
+        self.lbl_device_info.setText(self.lbl_device_info.text() + vram_hint)
     
     def _reset_defaults(self):
         """Reset all settings to defaults."""
@@ -164,6 +176,7 @@ class SettingsDialog(QDialog):
         self.config.set_device_id(device_id)
         
         # Save batch sizes
+        self.config.set_batch_size('phash', self.spin_phash.value())
         self.config.set_batch_size('clip', self.spin_clip.value())
         self.config.set_batch_size('blip', self.spin_blip.value())
         self.config.set_batch_size('mobilenet', self.spin_mobilenet.value())

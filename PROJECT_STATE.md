@@ -12,8 +12,10 @@ The project is a functional desktop application for image deduplication. It has 
 *   **Scanner (`core/scanner.py`)**: Traverses directories efficiently, handles file hashing (pHash) using multiprocessing (via `ScanWorker`), and updates the database.
 *   **Deduper (`core/deduper.py`)**: 
     *   Loads hashes from SQLite.
-    *   Performs **Exact Match** grouping (O(1)).
-    *   Performs **Fuzzy Matching** using a **BK-Tree** (`core/bktree.py`) for efficient Hamming distance queries. This replaced the previous O(N^2) approach.
+    ### Key Features and Architecture
+    - **Perceptual Hashing (pHash)**: Highly accelerated using **GPU-based DCT** and **Multi-Index Hashing (MIH)** for near-instant retrieval across millions of images.
+    - **Fuzzy Matching**: Uses a hybrid approach: MIH for candidate generation + **GPU-accelerated Hamming distance** for exact refinement.
+    - **Database**: SQLite optimized with WAL mode, chunked loading, and specialized MIH indexes.
     *   Supports filtering results by "scanned roots" to focus on active folders while utilizing the full historical database.
 *   **Database (`core/database.py`)**: 
     *   SQLite schema with `files` (path, phash, metadata), `scanned_paths`, and `ignored_pairs`.

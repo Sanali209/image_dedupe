@@ -12,6 +12,7 @@ from loguru import logger
 
 # Default batch sizes tuned for memory usage
 DEFAULT_BATCH_SIZES = {
+    "phash": 32,
     "clip": 8,
     "blip": 8,
     "mobilenet": 16
@@ -171,7 +172,7 @@ class GPUConfig:
     
     def get_batch_size(self, engine: str) -> int:
         """Get batch size for an engine."""
-        return self._batch_sizes.get(engine, 8)
+        return self._batch_sizes.get(engine, DEFAULT_BATCH_SIZES.get(engine, 8))
     
     def set_batch_size(self, engine: str, size: int) -> None:
         """Set batch size for an engine."""

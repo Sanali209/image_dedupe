@@ -59,11 +59,16 @@ class ScanWorker(QThread):
 
             # 2. Indexing
             logger.info("ScanWorker: Starting Indexing...")
+            from ui.utils import ThrottledSignal
+            throttler = ThrottledSignal(interval_ms=100) # 10 FPS is enough
+            throttler.emitted.connect(self.progress.emit)
+
             def on_progress(curr, total):
                 if self.stop_requested: return
-                self.progress.emit(curr, total)
+                throttler.emit(curr, total)
                 
             self.deduper.engine.index_files(files, progress_callback=on_progress)
+            throttler.flush() # Ensure it shows 100%
             
             if self.stop_requested: return
 
@@ -71,8 +76,10 @@ class ScanWorker(QThread):
             logger.info("ScanWorker: Starting Matching...")
             results = self.deduper.find_duplicates(
                 threshold=threshold,
-                roots=self.roots
+                roots=self.roots,
+                progress_callback=on_progress
             )
+            throttler.flush()
             
             self.scan_results_ready.emit(results)
             

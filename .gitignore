@@ -7,3 +7,6 @@
 /ui/__pycache__
 *.db-shm
 *.db-wal
+dedup_app.db-shm
+dedup_app.db-wal
+bktree_cache.pkl
