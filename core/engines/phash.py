@@ -305,7 +305,13 @@ class PHashEngine(BaseEngine):
         # 3. Persistence and Grouping
         if found_matches:
             logger.info(f"PHashEngine: Found {len(found_matches)} confirmed matches. Saving...")
-            self.file_repo.add_relations_batch(found_matches, overwrite=False)
+            try:
+                result = self.file_repo.add_relations_batch(found_matches, overwrite=False)
+                logger.info(f"PHashEngine: Persisted {result.get('added', 0)} relations, skipped {result.get('skipped', 0)}")
+                if result.get('skipped', 0) > 0:
+                    logger.warning(f"PHashEngine: {result['skipped']} relations skipped due to invalid file IDs")
+            except Exception as e:
+                logger.error(f"PHashEngine: Failed to persist relations: {e}")
             
         # Union-Find for grouping
         # We need the full file dicts for final output

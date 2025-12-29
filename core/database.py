@@ -14,6 +14,17 @@ class DatabaseManager:
         if not self.conn:
             self.conn = sqlite3.connect(self.db_path)
             self.conn.row_factory = sqlite3.Row
+            
+            # CRITICAL: Enable foreign key constraints (disabled by default in SQLite)
+            self.conn.execute("PRAGMA foreign_keys = ON;")
+            
+            # Verify FK status and log
+            fk_status = self.conn.execute("PRAGMA foreign_keys;").fetchone()[0]
+            if fk_status:
+                logger.debug("Foreign keys enabled successfully")
+            else:
+                logger.warning("Foreign keys could not be enabled!")
+            
             # Register bit_count function for Hamming distance if needed (Python 3.10+ has int.bit_count)
             # For SQLite < 3.35, we might need a custom function.
             self.conn.create_function("bit_count", 1, self._bit_count)
@@ -83,15 +94,20 @@ class DatabaseManager:
         ''')
         
         # File Relations Table (ID-based, primary storage for duplicates)
+        # DROP existing table to recreate with FK constraints (BREAKING CHANGE)
+        cursor.execute("DROP TABLE IF EXISTS file_relations")
+        
         cursor.execute('''
-            CREATE TABLE IF NOT EXISTS file_relations (
+            CREATE TABLE file_relations (
                 id1 INTEGER NOT NULL,
                 id2 INTEGER NOT NULL,
                 relation_type TEXT NOT NULL,
                 distance REAL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (id1, id2),
-                CHECK (id1 < id2)
+                CHECK (id1 < id2),
+                FOREIGN KEY (id1) REFERENCES files(id) ON DELETE CASCADE,
+                FOREIGN KEY (id2) REFERENCES files(id) ON DELETE CASCADE
             )
         ''')
         
@@ -113,6 +129,9 @@ class DatabaseManager:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_files_phash_c4 ON files(phash_c4)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_files_last_modified ON files(last_modified)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_relations_type ON file_relations(relation_type)')
+        # Foreign key indexes for better JOIN and CASCADE performance
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_relations_id1 ON file_relations(id1)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_relations_id2 ON file_relations(id2)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_cluster_members_path ON cluster_members(file_path)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_vector_status_engine ON vector_index_status(engine)')
         

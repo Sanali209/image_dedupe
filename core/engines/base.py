@@ -324,7 +324,13 @@ class BaseAIEngine(BaseEngine):
             
             unique_pairs = list(unique_map.values())
             logger.info(f"{self.engine_name}: Persisting {len(unique_pairs)} match pairs to DB...")
-            self.file_repo.add_relations_batch(unique_pairs, overwrite=False)
+            try:
+                result = self.file_repo.add_relations_batch(unique_pairs, overwrite=False)
+                logger.info(f"{self.engine_name}: Persisted {result.get('added', 0)} relations, skipped {result.get('skipped', 0)}")
+                if result.get('skipped', 0) > 0:
+                    logger.warning(f"{self.engine_name}: {result['skipped']} relations skipped (invalid file IDs)")
+            except Exception as e:
+                logger.error(f"{self.engine_name}: Failed to persist relations: {e}")
 
         from collections import defaultdict
         groups = defaultdict(list)

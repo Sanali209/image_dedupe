@@ -121,7 +121,10 @@ class Deduper:
         
         # Reconcile memory objects with DB state to reflect user decisions
         # This fixes the issue where pairs reappear as 'New Match' after scan even if annotated
+        logger.info(f"Deduper: Starting reconciliation for {len(final_relations)} relations...")
         reconciled = []
+        annotated_count = 0
+        
         for rel in final_relations:
             # Check DB for actual status
             # We can use file_repo to get relation (or verify via db_manager)
@@ -135,19 +138,30 @@ class Deduper:
             if existing_type:
                 # Update the object to match DB
                 try:
+                    original_type = rel.relation_type
                     rel.relation_type = RelationType(existing_type)
-                except:
-                    pass
+                    if existing_type != 'new_match':
+                        annotated_count += 1
+                        logger.debug(f"Deduper: Relation {rel.id1}<->{rel.id2} reconciled: {original_type} -> {existing_type}")
+                except Exception as e:
+                    logger.warning(f"Deduper: Failed to reconcile relation type '{existing_type}': {e}")
             
             # Filter if needed
             if not include_ignored:
                 # If handled (non-new_match), skip
                 # Note: 'new_match' is considered 'pending' (visible)
                 if rel.relation_type != RelationType.NEW_MATCH:
+                    logger.debug(f"Deduper: Filtering out relation {rel.id1}<->{rel.id2} (type={rel.relation_type.value})")
                     continue
             
             reconciled.append(rel)
         
+        logger.info(
+            f"Deduper: Reconciliation complete. "
+            f"Found {annotated_count} already-annotated pairs. "
+            f"Returning {len(reconciled)}/{len(final_relations)} relations "
+            f"(include_ignored={include_ignored})"
+        )
         final_relations = reconciled
             
         return final_relations
@@ -166,7 +180,11 @@ class Deduper:
              return
 
         logger.info(f"Persisting {len(relations)} relations to database...")
-        self.file_repo.add_relations_batch(relations, overwrite=False)
+        result = self.file_repo.add_relations_batch(relations, overwrite=False)
+        logger.info(
+            f"Persist complete: {result.get('added', 0)} added, "
+            f"{result.get('skipped', 0)} skipped"
+        )
         
     # Legacy alias
     save_ai_matches = save_relations

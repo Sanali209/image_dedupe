@@ -566,7 +566,11 @@ class ResultsWidget(QWidget):
             if left and right:
                 self.pairs.append((left, right, rel))
             else:
-                logger.warning(f"ResultsView: Missing file data for relation {rel.id1} <-> {rel.id2}")
+                logger.error(
+                    f"ResultsView: Missing file data for relation {rel.id1} <-> {rel.id2}. "
+                    f"This indicates orphaned database records (relations referencing deleted files). "
+                    f"Run database maintenance to clean up orphaned data."
+                )
 
         logger.info(f"ResultsView: Built {len(self.pairs)} pairs for display (Visible only: {not self.include_ignored}).")
         

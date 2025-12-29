@@ -91,6 +91,9 @@ class FileRepository:
 
         Returns:
             List of sqlite3.Row objects.
+            
+        Raises:
+            sqlite3.Error: If database query fails.
         """
         if not file_ids: return []
         self.db.connect()
@@ -103,10 +106,21 @@ class FileRepository:
         query = f"SELECT * FROM files WHERE id IN ({placeholders})"
         try:
             cursor = self.db.conn.execute(query, ids)
-            return cursor.fetchall()
-        except sqlite3.Error:
-            logger.exception(f"Failed to batch retrieve files for {len(ids)} IDs")
-            return []
+            results = cursor.fetchall()
+            
+            # Log if some IDs are missing (helps diagnose orphan issues)
+            found_ids = {r['id'] for r in results}
+            missing_ids = set(ids) - found_ids
+            if missing_ids:
+                logger.warning(
+                    f"get_files_by_ids: {len(missing_ids)} IDs not found in database: "
+                    f"{list(missing_ids)[:10]}{'...' if len(missing_ids) > 10 else ''}"
+                )
+            
+            return results
+        except sqlite3.Error as e:
+            logger.error(f"Failed to batch retrieve {len(ids)} file IDs: {e}")
+            raise
 
     def get_all_files(self) -> List[Any]:
         """
@@ -156,10 +170,14 @@ class FileRepository:
 
     def add_relations_batch(self, relations: list, overwrite=True):
         """
-        Batch insert relations.
+        Batch insert relations with FK validation.
         Accepts List[FileRelation] (Pydantic models).
+        
+        Returns:
+            Dict with statistics: {'added': int, 'skipped': int, 'errors': int}
         """
-        if not relations: return
+        if not relations: 
+            return {'added': 0, 'skipped': 0, 'errors': 0}
         
         # Check if input is Pydantic models (preferred)
         is_pydantic = hasattr(relations[0], 'relation_type') and hasattr(relations[0], 'id1')
@@ -188,23 +206,57 @@ class FileRepository:
                 s1, s2 = sorted((i1, i2))
                 data.append((s1, s2, r, d))
 
-        if not data: return
+        if not data: 
+            return {'added': 0, 'skipped': 0, 'errors': 0}
 
         self.db.connect()
+        
+        # Pre-validate that all referenced file IDs exist (prevent FK violations)
+        all_ids = set()
+        for s1, s2, _, _ in data:
+            all_ids.add(s1)
+            all_ids.add(s2)
+        
+        # Batch check existence
+        placeholders = ','.join('?' for _ in all_ids)
+        cursor = self.db.conn.execute(
+            f"SELECT id FROM files WHERE id IN ({placeholders})",
+            list(all_ids)
+        )
+        existing_ids = {row['id'] for row in cursor.fetchall()}
+        
+        # Filter to valid data only
+        valid_data = []
+        skipped = 0
+        for s1, s2, rtype, dist in data:
+            if s1 in existing_ids and s2 in existing_ids:
+                valid_data.append((s1, s2, rtype, dist))
+            else:
+                skipped += 1
+                logger.warning(f"Skipping relation {s1}<->{s2}: Referenced file IDs don't exist (orphan prevented)")
+        
+        if skipped > 0:
+            logger.warning(f"add_relations_batch: Skipped {skipped}/{len(data)} invalid relations due to missing file IDs")
+        
+        if not valid_data:
+            return {'added': 0, 'skipped': skipped, 'errors': 0}
+        
         try:
             if overwrite:
                 self.db.conn.executemany('''
                     INSERT INTO file_relations (id1, id2, relation_type, distance) VALUES (?, ?, ?, ?)
                     ON CONFLICT(id1, id2) DO UPDATE SET relation_type=excluded.relation_type, distance=excluded.distance
-                ''', data)
+                ''', valid_data)
             else:
                  self.db.conn.executemany('''
                     INSERT INTO file_relations (id1, id2, relation_type, distance) VALUES (?, ?, ?, ?)
                     ON CONFLICT(id1, id2) DO NOTHING
-                ''', data)
+                ''', valid_data)
             self.db.conn.commit()
+            return {'added': len(valid_data), 'skipped': skipped, 'errors': 0}
         except sqlite3.Error as e:
             logger.error(f"Batch DB Relation Insert Error: {e}")
+            return {'added': 0, 'skipped': skipped, 'errors': 1}
 
     # Legacy Aliases / Transitions
     add_ignored_pairs_batch = add_relations_batch
