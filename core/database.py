@@ -94,11 +94,10 @@ class DatabaseManager:
         ''')
         
         # File Relations Table (ID-based, primary storage for duplicates)
-        # DROP existing table to recreate with FK constraints (BREAKING CHANGE)
-        cursor.execute("DROP TABLE IF EXISTS file_relations")
+        # NOTE: Table created with foreign key constraints. Annotations persist across app restarts.
         
         cursor.execute('''
-            CREATE TABLE file_relations (
+            CREATE TABLE IF NOT EXISTS file_relations (
                 id1 INTEGER NOT NULL,
                 id2 INTEGER NOT NULL,
                 relation_type TEXT NOT NULL,

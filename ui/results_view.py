@@ -555,10 +555,14 @@ class ResultsWidget(QWidget):
         # 3. Build Pairs List
         self.pairs = []
         for rel in valid_relations:
-            is_visible = rel.is_visible
+            # FIX: Properly filter based on annotation mode
+            # When "Show Annotated" is OFF (include_ignored=False), only show NEW_MATCH pairs
+            if not self.include_ignored:
+                if rel.relation_type != RelationType.NEW_MATCH:
+                    logger.debug(f"Filtering out {rel.relation_type.value} pair: {rel.id1}<->{rel.id2}")
+                    continue
             
-            if not self.include_ignored and not is_visible:
-                continue
+            # When "Show Annotated" is ON (include_ignored=True), show all pairs (no filtering)
                 
             left = files_map.get(rel.id1)
             right = files_map.get(rel.id2)
@@ -660,11 +664,19 @@ class ResultsWidget(QWidget):
         
         try:
             if action == 'delete_left':
+                deleted_file_id = left['id']
                 os.remove(left['path'])
                 self.db.mark_deleted(left['path'])
+                # NEW: Remove all pairs containing the deleted file from UI
+                self.remove_pairs_containing_file(deleted_file_id)
+                return  # Exit early since we handled UI update
             elif action == 'delete_right':
+                deleted_file_id = right['id']
                 os.remove(right['path'])
                 self.db.mark_deleted(right['path'])
+                # NEW: Remove all pairs containing the deleted file from UI
+                self.remove_pairs_containing_file(deleted_file_id)
+                return  # Exit early since we handled UI update
             elif action == 'ignore':
                 self.db.add_ignored_pair_id(left['id'], right['id'], reason)
                 if not getattr(self, 'include_ignored', False):
@@ -746,6 +758,42 @@ class ResultsWidget(QWidget):
             elif (right['width']*right['height']) < (left['width']*left['height']): action = 'delete_right'
         if action: self.resolve(action)
         else: QMessageBox.information(self, "Info", "Files are equal in this criteria.")
+
+    def remove_pairs_containing_file(self, file_id: int):
+        """
+        Remove all pairs from the UI list that reference the given file ID.
+        Called after deleting a file to cascade the removal to all affected pairs.
+        
+        Args:
+            file_id: The database ID of the deleted file
+        """
+        indices_to_remove = []
+        
+        # Find all pairs containing the deleted file
+        for idx, (left, right, rel) in enumerate(self.pairs):
+            if left['id'] == file_id or right['id'] == file_id:
+                indices_to_remove.append(idx)
+        
+        if not indices_to_remove:
+            logger.warning(f"No pairs found containing deleted file ID {file_id}")
+            return
+        
+        logger.info(f"Removing {len(indices_to_remove)} pairs containing deleted file ID {file_id}")
+        
+        # Remove in reverse order to preserve indices
+        for idx in reversed(indices_to_remove):
+            self.model.removePairAt(idx)
+        
+        # Update UI to show next available pair
+        if len(self.pairs) > 0:
+            # Clamp current_pair_idx to valid range
+            self.current_pair_idx = min(self.current_pair_idx, len(self.pairs) - 1)
+            self.group_view.setCurrentIndex(self.model.index(self.current_pair_idx, 0))
+            self.update_comparison()
+        else:
+            self.comparison.clear()
+            QMessageBox.information(self, "All Pairs Reviewed", 
+                "No more pairs to review. All pairs have been processed.")
 
     def show_diff_image(self, left, right):
         # self.comparison.set_image(self.comparison.lbl_img_top, left['path'])

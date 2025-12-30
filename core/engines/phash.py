@@ -302,7 +302,23 @@ class PHashEngine(BaseEngine):
                 progress_callback(i, total)
             QCoreApplication.processEvents()
             
-        # 3. Persistence and Grouping
+        # 3. Filter by root_paths if specified
+        if root_paths and found_matches:
+            logger.info(f"PHashEngine: Filtering matches to {len(root_paths)} selected folders...")
+            # Get all files in selected roots
+            files_in_roots = self.db_manager.get_files_in_roots(root_paths)
+            root_file_ids = set(f['id'] for f in files_in_roots)
+            logger.info(f"PHashEngine: Found {len(root_file_ids)} files within selected folders")
+            
+            # Filter matches to only include pairs where BOTH files are in roots
+            filtered_matches = [
+                rel for rel in found_matches 
+                if rel.id1 in root_file_ids and rel.id2 in root_file_ids
+            ]
+            logger.info(f"PHashEngine: Filtered from {len(found_matches)} to {len(filtered_matches)} matches within folders")
+            found_matches = filtered_matches
+        
+        # 4. Persistence and Grouping
         if found_matches:
             logger.info(f"PHashEngine: Found {len(found_matches)} confirmed matches. Saving...")
             try:
