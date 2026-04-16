@@ -26,7 +26,7 @@ def main():
     ServiceContainer.register(ClusterRepository, cluster_repo)
     ServiceContainer.register(ScanSession, session)
 
-    app = QApplication(sys.argv)
+    app = QApplication(sys.argv
     app.setApplicationName("ImageDeduper")
     
     # Inject dependencies into MainWindow
