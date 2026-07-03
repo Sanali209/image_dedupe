@@ -1,0 +1,34 @@
+<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Шаг 4/14 — Frontend Flow + Step 5 UI/UX</title><style>:root{--bg:#0d1117;--bg2:#161b22;--fg:#e6edf3;--fg2:#8b949e;--cyan:#58a6ff;--violet:#bc8cff;--border:#30363d}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',monospace;background:var(--bg);color:var(--fg);padding:2rem;max-width:1200px;margin:0 auto}h1{background:linear-gradient(135deg,var(--cyan),var(--violet));-webkit-background-clip:text;-webkit-text-fill-color:transparent}h2{color:var(--cyan);border-bottom:1px solid var(--border)}pre{background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1rem;color:var(--fg2);font-size:.85rem;overflow-x:auto}a{color:var(--cyan)}.footer{margin-top:3rem;color:var(--fg2);font-size:.85rem}.crosslinks{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:1rem;margin:1rem 0}.ux{background:var(--bg2);border-left:3px solid var(--violet);border-radius:0 6px 6px 0;padding:.6rem;margin:.4rem 0}</style></head><body>
+<h1>Шаг 4+5/14 — Frontend + Desktop GUI</h1>
+<div class="crosslinks"><a href="index.html">🏠 index.html</a></div>
+
+<h2>Pass 2: Архитектура UI</h2>
+<p>MainWindow использует <strong>QStackedWidget</strong> — 4 экрана (индексы 0-3): ScanSetup → Progress → Results → Clusters.</p>
+<p>ScanSession — единый источник истины (Single Source of Truth) с Qt Signals. Изменение любого свойства (roots, engine, threshold) → config_changed Signal → UI обновляется.</p>
+<p>ScanWorker (QThread) — background thread. ThrottledSignal для прогресса (100ms = 10 FPS). 3 этапа в run(): os.walk discovery → indexing (phash/AI extract) → matching (MIH + Hamming).</p>
+
+<h2>Компоненты UI</h2>
+<pre>MainWindow (QMainWindow)
+├── ScanSetupWidget — выбор папок, engine, threshold
+├── ResultsView — QListView virtualization (1M+ pairs)
+│   ├── Image A vs Image B (pair view)
+│   ├── Visual Difference Mode (heatmap)
+│   └── Action buttons: Duplicate/Similar/Crop/Not Dup etc.
+├── ClusterView — sticky clusters list + drag-drop
+├── ProgressView — прогресс сканирования
+└── SettingsDialog — настройки</pre>
+
+<h2>User Flows</h2>
+<div class="ux"><h4>Scan Flow:</h4>Select folders → Choose engine (pHash/AI/CLIP/BLIP) → Set threshold → Scan → Progress → Results appear as pairs</div>
+<div class="ux"><h4>Triage Flow:</h4>Swipe through pairs → Mark as Duplicate/Similar/Crop/Not Duplicate → Auto-skips to next → Undo/redo supported</div>
+<div class="ux"><h4>Cluster Flow:</h4>Drag files to cluster → Rename → Set target folder → Auto-expand on next scan → Context menu: Remove/Delete/Open</div>
+
+<h2>UX Patterns</h2>
+<div class="ux">QListView virtualization для 1M+ пар без лага</div>
+<div class="ux">Visual Difference Mode — heatmap pixel-diff</div>
+<div class="ux">Dark theme с PySide6 stylesheets</div>
+<div class="ux">Show Annotated toggle — NEW_MATCH vs все отношения</div>
+<div class="ux">Status color coding для статусов файлов</div>
+
+<div class="footer"><a href="index.html">🏠 index.html</a> | 2026-05-26</div>
+</body></html>

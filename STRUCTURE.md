@@ -1,0 +1,62 @@
+## Structural Map
+
+```
+├── main.py                  — Точка входа: DI setup + QApplication + MainWindow [HIGH]
+├── core/                    — Ядро: engines, database, deduper, models [HIGH]
+│   ├── database.py          — DatabaseManager: SQLite, 6 tables, batch CRUD, MIH chunks [HIGH]
+│   ├── models.py            — Pydantic: File, FileRelation, Cluster, ClusterMember [HIGH]
+│   ├── deduper.py           — Deduper: facade over engines + GraphBuilder + ClusterReconciler [HIGH]
+│   ├── scanner.py           — ScanWorker(QThread): discovery → indexing → matching [HIGH]
+│   ├── scan_session.py      — ScanSession: SSOT config/state with Qt Signals [HIGH]
+│   ├── bktree.py            — BKTree: in-memory Hamming distance index [HIGH]
+│   ├── cluster_services.py  — GraphBuilder (BFS components) + ClusterReconciler (sticky) [HIGH]
+│   ├── di.py                — ServiceContainer: простой DI (dict singleton) [MEDIUM]
+│   ├── event_bus.py         — EventBus: Qt Signals singleton (scan, file, status) [MEDIUM]
+│   ├── gpu_config.py        — GPUConfig: detect CUDA/MPS/CPU [MEDIUM]
+│   ├── vector_db.py         — ChromaDB integration (опционально) [LOW]
+│   ├── thumbnail_manager.py — ThumbnailManager: background QThread scaling [LOW]
+│   ├── scanner_state.py     — ScannerContext state machine [LOW]
+│   ├── logger.py            — Qt log handler [LOW]
+│   │
+│   ├── engines/             — Strategy Pattern: 4 matching engines [HIGH]
+│   │   ├── abstract.py      — AbstractDedupeEngine (ABC): index_files + find_duplicates [HIGH]
+│   │   ├── base.py          — BaseEngine: constructor boilerplate [HIGH]
+│   │   ├── phash.py         — PHashEngine: GPU DCT + MIH + BKTree fallback [HIGH]
+│   │   ├── mobilenet.py     — MobileNetEngine: MobileNetV3 embeddings [HIGH]
+│   │   ├── clip.py          — CLIPEngine: CLIP ViT-B-32 [HIGH]
+│   │   ├── directml_clip.py — DirectMLCLIPEngine: Windows DirectML variant [MEDIUM]
+│   │   ├── blip.py          — BLIPEngine: BLIP caption encoder [HIGH]
+│   │   └── gpu_batch_search.py — GPUBatchSearch: batch Hamming distance [HIGH]
+│   │
+│   ├── repositories/        — Data Access Layer [HIGH]
+│   │   ├── file_repository.py   — FileRepository: CRUD, relations, batch FK validation [HIGH]
+│   │   └── cluster_repository.py — ClusterRepository [MEDIUM]
+│   │
+│   └── commands/            — Command History [LOW]
+│
+├── ui/                      — PySide6 GUI: 4 экрана в QStackedWidget [HIGH]
+│   ├── mainwindow.py        — MainWindow: toolbar, menus, stacked navigation [HIGH]
+│   ├── scan_setup.py        — ScanSetupWidget: folder selection + engine config [HIGH]
+│   ├── progress_view.py     — ProgressWidget: scan progress + log [HIGH]
+│   ├── results_view.py      — ResultsWidget: QListView + ComparisonWidget + diff [HIGH]
+│   ├── cluster_view.py      — ClusterViewWidget: sticky clusters management [HIGH]
+│   ├── settings_dialog.py   — SettingsDialog [MEDIUM]
+│   └── utils.py             — ThrottledSignal [LOW]
+│
+├── tests/                   — ~8 тестовых файлов [LOW]
+├── docs/                    — Документация [LOW]
+├── dev_log/                 — Логи разработки [LOW]
+├── docks/                   — HTML отчёты [LOW]
+├── requirements.txt         — 14 зависимостей [HIGH]
+├── PROJECT_STATE.md         — Состояние проекта [MEDIUM]
+├── project_context.json     — Контекст для AI [MEDIUM]
+├── build.bat               — pyinstaller билд [LOW]
+└── run_app.bat             — Quick run [LOW]
+```
+
+**Правила зависимостей:**
+- `ui/` зависит от `core/` (DatabaseManager, Deduper, ScanSession, FileRepository) [HIGH]
+- `core/engines/` зависит от `core/` (DatabaseManager, BKTree, GPUConfig, models) [HIGH]
+- `core/engines/` НЕ зависит от `ui/` [HIGH]
+- `core/repositories/` зависит от `core/database.py` + `core/models.py` [HIGH]
+- `core/` НЕ использует DI контейнер — ручное связывание в main.py [HIGH]

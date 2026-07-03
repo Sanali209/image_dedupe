@@ -1,0 +1,48 @@
+<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Шаг 1/14 — Surface Scan</title><style>:root{--bg:#0d1117;--bg2:#161b22;--fg:#e6edf3;--fg2:#8b949e;--cyan:#58a6ff;--violet:#bc8cff;--green:#3fb950;--border:#30363d}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',monospace;background:var(--bg);color:var(--fg);padding:2rem;max-width:1200px;margin:0 auto}h1{background:linear-gradient(135deg,var(--cyan),var(--violet));-webkit-background-clip:text;-webkit-text-fill-color:transparent}h2{color:var(--cyan);border-bottom:1px solid var(--border)}table{width:100%;border-collapse:collapse;margin:1rem 0}th,td{padding:.6rem 1rem;border-bottom:1px solid var(--border);text-align:left}th{color:var(--fg2);font-size:.85rem;text-transform:uppercase}pre{background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1rem;color:var(--fg2);font-size:.85rem;overflow-x:auto}a{color:var(--cyan)}.footer{margin-top:3rem;color:var(--fg2);font-size:.85rem}.crosslinks{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:1rem;margin:1rem 0}.concept{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:1rem;margin:1rem 0}.pass{color:var(--green)}</style></head><body>
+<h1>Шаг 1/14 — Surface Scan</h1>
+<div class="crosslinks"><a href="index.html">🏠 index.html</a></div>
+
+<h2>1.1 Perimeter</h2>
+<table><tr><th>Метрика</th><th>Значение</th></tr><tr><td>Python файлов</td><td>52</td></tr><tr><td>Строк кода</td><td>7,980</td></tr><tr><td>Всего файлов</td><td>68</td></tr><tr><td>Тестов</td><td>8 test файлов</td></tr><tr><td>SQLite .db файлов</td><td>1 (dedup_app.db + WAL)</td></tr></table>
+
+<h3>Структура</h3>
+<pre>core/           — database, models, deduper, engines, repositories, commands, services
+core/engines/   — phash.py, mobilenet.py, clip.py, directml_clip.py, blip.py, base.py
+core/commands/  — base.py, actions.py (UndoableCommand, CommandHistory)
+core/repositories/ — file_repository.py, cluster_repository.py
+ui/             — mainwindow.py, results_view.py, cluster_view.py, scan_setup.py, progress_view.py, settings_dialog.py
+tests/          — test_repositories/, test_commands/, verify_engines.py, diagnose_*.py</pre>
+
+<h2>1.2 Dependencies</h2>
+<table><tr><th>Библиотека</th><th>Назначение</th></tr><tr><td>PySide6</td><td>Desktop GUI</td></tr><tr><td>imagehash</td><td>Perceptual hashing (pHash)</td></tr><tr><td>torch + torchvision</td><td>AI models (MobileNetV3)</td></tr><tr><td>transformers</td><td>CLIP + BLIP</td></tr><tr><td>sentence-transformers</td><td>Text embeddings for CLIP</td></tr><tr><td>chromadb</td><td>Vector DB for AI embeddings</td></tr><tr><td>pydantic</td><td>Models (File, FileRelation, Cluster)</td></tr><tr><td>loguru</td><td>Logging</td></tr><tr><td>numpy + pillow</td><td>Image processing</td></tr><tr><td>torch-directml</td><td>DirectML acceleration (Windows)</td></tr></table>
+
+<h2>1.3 SQLite Schema</h2>
+<pre>files: id, path(UNIQUE), phash, phash_c1..c4(16-bit chunks), file_size, width, height, last_modified
+scanned_paths: path(PK)
+clusters: id, name, target_folder, created_at
+cluster_members: cluster_id(FK→clusters), file_path, UNIQUE(cluster_id,file_path)
+file_relations: id1(FK→files), id2(FK→files), relation_type, distance, created_at
+  PK(id1,id2), CHECK(id1&lt;id2)
+vector_index_status: path, engine, indexed_at, PK(path,engine)
+</pre>
+<p>PRAGMA: WAL, synchronous=NORMAL, cache=-64000, temp_store=MEMORY. 11 indexes.</p>
+
+<h2>1.4 Concepts</h2>
+<div class="concept"><h4>P1: MIH (Multi-Index Hashing)</h4>64-bit phash → 4×16-bit chunks. Self-join на совпадение любого чанка. BK-Tree для ускорения.</div>
+<div class="concept"><h4>P2: Plugable Engines</h4>AbstractEngine → PHashEngine, MobileNetEngine, CLIPEngine, BLIPEngine. Deduper.set_engine(type) переключает.</div>
+<div class="concept"><h4>P3: File Relations System</h4>ID-based file_relations с 10 типами (NEW_MATCH, DUPLICATE, NEAR_DUPLICATE, CROP_DUPLICATE, SIMILAR, NOT_DUPLICATE...). Visibility Logic.</div>
+<div class="concept"><h4>P4: Sticky Clusters</h4>Cluster + ClusterMember. ID-based tracking. Auto-expansion при новых сканах.</div>
+<div class="concept"><h4>P5: UndoableCommand</h4>Command Pattern с history: MarkDuplicateCommand, ChangeRelationCommand, etc.</div>
+<div class="concept"><h4>P6: ServiceContainer (DI)</h4>Простой DI-контейнер с singleton registry. Регистрация в main.py.</div>
+
+<h2>Pass 2 Additions</h2>
+<ul>
+<li><strong>GPUHasher:</strong> PyTorch DCT для GPU-accelerated pHash. DirectML для Windows AMD/NVIDIA</li>
+<li><strong>ScanWorker (QThread):</strong> 3 фазы: Discovery (os.walk) → Indexing (hash/extract) → Matching (MIH → Hamming). ThrottledSignal для прогресса (10 FPS)</li>
+<li><strong>EventBus:</strong> Qt Signal-based singleton. scan_started, scan_finished, scan_progress, file_deleted, status_message</li>
+<li><strong>ScanSession:</strong> reactive properties (roots, engine, threshold, include_ignored) с config_changed Signal. auto-sync scanned_paths с БД</li>
+<li><strong>MainWindow:</strong> QStackedWidget с 4 экранами (Setup→Progress→Results→Clusters). Toolbar + Menu</li>
+</ul>
+
+<div class="footer"><a href="index.html">🏠 index.html</a> | 2026-05-26</div>
+</body></html>

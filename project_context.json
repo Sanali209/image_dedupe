@@ -1,0 +1,111 @@
+{
+  "user_preferences": {
+    "interaction_style": "Task-oriented and direct. The user provides high-level goals, and the agent is expected to formulate and execute multi-step implementation plans.",
+    "technical_focus": "Python 3.10+ high-performance CV and desktop utility using PySide6 (Qt GUI), PyTorch, Torchvision (MobileNetV3), Hugging Face Transformers (CLIP, BLIP), BK-Trees, and SQLite. Focuses on GPU acceleration (CUDA, MPS) and UI virtualization.",
+    "goal_orientation": "Building Tachyon Image Deduper, a premium desktop image triage workbench implementing perceptual hash searches, vector distance checks, and persistent Sticky Clusters."
+  },
+  "project_knowledge": {
+    "overview": "Tachyon Image Deduper is an advanced image deduplication desktop application executing rapid perceptual hash lookups via BK-Trees, and semantic visual matches via MobileNet/CLIP/BLIP, integrating sticky groups and relation filtering.",
+    "architecture": {
+      "matching_engines": "Four tiers: Perceptual Hash (pHash) optimized via a fast in-memory BK-Tree using Hamming Distance, and three AI embeddings: MobileNetV3 (576 dim for speed), CLIP ViT-B-32 (512 dim standard), and BLIP (768 dim for conceptual similarity).",
+      "cluster_system": "Persistent 'Sticky Clusters' are stored in SQLite. Future scans match new files against the persistent clusters. File bindings rely on ID-based mapping and absolute paths normalized with `os.path.normpath` during addition.",
+      "relations_management": "User actions categorize file pairs (`FileRelation`) as Duplicate, Near Duplicate, Crop, Similar, Same Person, etc. Visibility logic dynamically filters unreviewed (`NEW_MATCH`) and annotated relations.",
+      "virtualized_ui": "PySide6 GUI. Employs `QListView` model-view architecture with high-scale virtualization to display 1M+ candidate duplicate pairs seamlessly. Offers a high-contrast heatmap ('Visual Difference Mode') to isolate pixel alterations.",
+      "gpu_acceleration": "`gpu_config.py` evaluates system drivers, dynamically selecting PyTorch targets (NVIDIA CUDA, Apple Silicon MPS, or Intel CPU AVX) to accelerate embedding models."
+    }
+  },
+  "design_knowledge": {
+    "protocols_and_abcs": {
+      "protocols": [
+        {"name": "BKTree", "file": "core/bktree.py:11", "methods": "add, search", "usage": "Accelerated lookup tree utilizing Hamming Distance metrics"},
+        {"name": "FileRelation", "file": "core/models.py:58", "properties": "is_visible", "usage": "Pydantic model representing candidate file pair matches and user decisions"}
+      ],
+      "abcs": [
+        {"name": "File", "file": "core/models.py:33", "usage": "Database profile for disk image entries"},
+        {"name": "Cluster", "file": "core/models.py:84", "usage": "Persistent user grouping container holding target directory info"}
+      ]
+    },
+    "decorator_patterns": {
+      "standard_decorators": {
+        "@field_validator": "Used inside Pydantic structures to normalize file path delimiters across Windows/Unix."
+      }
+    },
+    "async_patterns": {
+      "qt_threads": "Leverages PySide6 `QThread` components inside `ThumbnailManager` and `Scanner` to offload heavy file indexing, database writes, and thumbnail scaling without locking the GUI rendering cycle."
+    },
+    "descriptor_protocol": {
+      "usage": "Not used. Relies on standard Qt property mappings."
+    },
+    "context_managers": {
+      "usage": "Database transaction locks and file streaming pipelines."
+    },
+    "metaclass_usage": {
+      "usage": "Delegated to Pydantic and SQLite wrapper configurations."
+    },
+    "pydantic_patterns": {
+      "usage": "Data models are validated using Pydantic v2, featuring strict type checks for datetime and paths."
+    },
+    "import_patterns": {
+      "lazy_heavy_imports": "Heavy scientific packages (torch, torchvision, sentence_transformers) are imported dynamically inside their respective model engine handlers (e.g. CLIPEngine, MobileNetEngine) to allow rapid application launch."
+    }
+  },
+  "app_domain_analysis": {
+    "core": {
+      "domain": "Framework core managing the local SQLite database (`database.py`), BK-Tree cache (`bktree.py`), GPU targets, and background scan workflows.",
+      "key_components": [
+        "BKTree: In-memory Hamming distance index.",
+        "ClusterServices (cluster_services.py): Saves, merges, and auto-expands sticky clusters.",
+        "ThumbnailManager (thumbnail_manager.py): Non-blocking image resizing and cache management."
+      ]
+    },
+    "ui": {
+      "domain": "PySide6 user interface managing the scan configuration, virtualization lists, and cluster organizers.",
+      "key_components": [
+        "QListView: Highly optimized list model preventing GUI lag.",
+        "Visual Difference Mode: High-contrast heatmap overlay comparing pixel changes."
+      ]
+    }
+  },
+  "testing_deep_analysis": {
+    "total_test_files": "~2-5 test modules under tests/.",
+    "patterns": {
+      "diagnostics": "Utilizes specific diagnostic scripts to verify database schema integrity (`diagnose_integrity.py`), evaluate cluster merge conflicts (`reproduce_cluster_issue.py`), and test pHash CPU performance (`verify_phash_accel.py`)."
+    }
+  },
+  "ci_cd_pipelines": {
+    "status": "No continuous integration workflows exist in the current setup."
+  },
+  "database_migrations": {
+    "sqlite": "Managed locally via `database.py` which sets up relational tables, compound indices, and WAL settings during startup."
+  },
+  "architectural_decisions": [
+    {"id": "ADR-001", "title": "BK-Tree Perceptual Hash Acceleration", "decision": "Store pHash values as standard strings, indexing them in an in-memory BK-Tree to permit sub-millisecond Hamming distance lookups across millions of images.", "status": "Accepted"},
+    {"id": "ADR-002", "title": "Model-View UI Virtualization", "decision": "Unify UI duplicate triage views into virtualized Qt Models, bypassing native widget constraints to sustain 1M+ entries without memory thrashing.", "status": "Accepted"},
+    {"id": "ADR-003", "title": "Generic Relation Mapping", "decision": "Track user similarity judgments inside a generalized `file_relations` table to support crop matches, style similarity, and facial groups uniformly.", "status": "Accepted"}
+  ],
+  "error_handling_strategy": {
+    "strategy": "Missing files or disk read failures are logged and bypassed. GPU out-of-memory errors fallback gracefully to CPU execution."
+  },
+  "todo_fixme_hack_inventory": [
+    {
+      "id": "TD-0001",
+      "title": "BKTree Cache Staleness",
+      "module": "core/bktree.py",
+      "priority": "P2",
+      "status": "OPEN",
+      "description": "Modifications or deletions of files require clearing their corresponding node entries from the serialized `bktree_cache.pkl` to prevent stale matches."
+    }
+  ],
+  "white_spots": [
+    "Integrating incremental model training loops to let users fine-tune similarity scores based on their matching actions.",
+    "Real-time file observer integration to update clusters instantly on disk modifications."
+  ],
+  "open_questions": [
+    "Should BLIP captions undergo semantic text search to facilitate natural language search on the image repository?",
+    "Should we support remote PostgreSQL deployment to facilitate shared cluster organization across different network stations?"
+  ],
+  "metadata": {
+    "last_updated": "2026-05-31T14:50:00+03:00",
+    "update_plan": "Update whenever matching engines change, sticky cluster persistence schemas are updated, or SQLite structures are modified."
+  }
+}

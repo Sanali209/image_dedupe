@@ -1,0 +1,32 @@
+<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Шаг 2/14 — Entity Model</title><style>:root{--bg:#0d1117;--bg2:#161b22;--fg:#e6edf3;--fg2:#8b949e;--cyan:#58a6ff;--violet:#bc8cff;--border:#30363d}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',monospace;background:var(--bg);color:var(--fg);padding:2rem;max-width:1200px;margin:0 auto}h1{background:linear-gradient(135deg,var(--cyan),var(--violet));-webkit-background-clip:text;-webkit-text-fill-color:transparent}h2{color:var(--cyan);border-bottom:1px solid var(--border)}table{width:100%;border-collapse:collapse;margin:1rem 0}th,td{padding:.5rem .8rem;border-bottom:1px solid var(--border);text-align:left}th{color:var(--fg2);font-size:.85rem;text-transform:uppercase}a{color:var(--cyan)}.footer{margin-top:3rem;color:var(--fg2);font-size:.85rem}.crosslinks{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:1rem;margin:1rem 0}.entity{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:.75rem;margin:.5rem 0}.entity h4{color:var(--violet);margin:0}.entity .t{color:var(--fg2);font-size:.85rem}</style></head><body>
+<h1>Шаг 2/14 — Entity Model</h1>
+<div class="crosslinks"><a href="index.html">🏠 index.html</a></div>
+
+<h2>2.1 Pydantic Models</h2>
+<div class="entity"><h4>File</h4><span class="t">Pydantic BaseModel</span><p>id: int, path: str, phash: Optional[str], file_size, width, height, last_modified. property: name</p></div>
+<div class="entity"><h4>FileRelation</h4><span class="t">Pydantic BaseModel</span><p>id1: int, id2: int, relation_type: RelationType(enum), distance: Optional[float], created_at. property: is_visible</p></div>
+<div class="entity"><h4>Cluster</h4><span class="t">Pydantic BaseModel</span><p>id: Optional[int], name: str, target_folder: Optional[str], created_at</p></div>
+<div class="entity"><h4>ClusterMember</h4><span class="t">Pydantic BaseModel</span><p>cluster_id: int, file_path: str (normalized), added_at. validator normalize_path.</p></div>
+
+<h2>2.2 RelationType Enum</h2>
+<p><strong>System:</strong> NEW_MATCH (unreviewed)</p>
+<p><strong>User decisions:</strong> DUPLICATE, NEAR_DUPLICATE, CROP_DUPLICATE, SIMILAR, SIMILAR_STYLE, SAME_PERSON, SAME_IMAGE_SET, OTHER</p>
+<p><strong>Negative:</strong> NOT_DUPLICATE (explicitly rejected)</p>
+
+<h2>2.3 SQLite Tables</h2>
+<table><tr><th>Таблица</th><th>PK</th><th>FK</th></tr>
+<tr><td>files</td><td>id (AUTOINCREMENT)</td><td>—</td></tr>
+<tr><td>scanned_paths</td><td>path</td><td>—</td></tr>
+<tr><td>clusters</td><td>id (AUTOINCREMENT)</td><td>—</td></tr>
+<tr><td>cluster_members</td><td>(cluster_id, file_path)</td><td>cluster_id→clusters ON DELETE CASCADE</td></tr>
+<tr><td>file_relations</td><td>(id1, id2), CHECK(id1&lt;id2)</td><td>id1/id2→files ON DELETE CASCADE</td></tr>
+<tr><td>vector_index_status</td><td>(path, engine)</td><td>—</td></tr></table>
+
+<h2>2.4 Relationships</h2>
+<pre>File ──1:N────▶ FileRelation (as id1/id2)
+FileRelation ──自查: id1 ↔ id2 (both FK→files)
+Cluster ──1:N──▶ ClusterMember
+ClusterMember ──N:1──▶ File (via file_path, not FK)</pre>
+
+<div class="footer"><a href="index.html">🏠 index.html</a> | 2026-05-26</div>
+</body></html>

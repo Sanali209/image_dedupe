@@ -1,0 +1,33 @@
+<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Шаг 7/14 — Feature Analysis [WEB]</title><style>:root{--bg:#0d1117;--bg2:#161b22;--fg:#e6edf3;--fg2:#8b949e;--cyan:#58a6ff;--violet:#bc8cff;--green:#3fb950;--border:#30363d}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',monospace;background:var(--bg);color:var(--fg);padding:2rem;max-width:1200px;margin:0 auto}h1{background:linear-gradient(135deg,var(--cyan),var(--violet));-webkit-background-clip:text;-webkit-text-fill-color:transparent}h2{color:var(--cyan);border-bottom:1px solid var(--border)}table{width:100%;border-collapse:collapse;margin:1rem 0}th,td{padding:.5rem .8rem;border-bottom:1px solid var(--border);text-align:left}th{color:var(--fg2);font-size:.85rem;text-transform:uppercase}a{color:var(--cyan)}.footer{margin-top:3rem;color:var(--fg2);font-size:.85rem}.crosslinks{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:1rem;margin:1rem 0}.f{background:var(--bg2);border-left:3px solid var(--cyan);border-radius:0 6px 6px 0;padding:.3rem .5rem;margin:.2rem 0;display:flex;justify-content:space-between;font-size:.85rem}</style></head><body>
+<h1>Шаг 7/14 — Feature Analysis [WEB]</h1>
+<div class="crosslinks"><a href="index.html">🏠 index.html</a></div>
+
+<h2>Features</h2>
+<div class="f"><span>✅ pHash matching (Hamming distance + BK-Tree)</span></div>
+<div class="f"><span>✅ AI MobileNetV3 semantic matching</span></div>
+<div class="f"><span>✅ CLIP semantic matching (beta)</span></div>
+<div class="f"><span>✅ BLIP semantic matching (experimental)</span></div>
+<div class="f"><span>✅ MIH (Multi-Index Hashing) 4×16-bit chunks</span></div>
+<div class="f"><span>✅ BK-Tree acceleration with pickle cache</span></div>
+<div class="f"><span>✅ Batch upsert (5,000/batch)</span></div>
+<div class="f"><span>✅ Chunked file iteration (50,000/chunk)</span></div>
+<div class="f"><span>✅ Sticky Clusters (persistent + auto-expand)</span></div>
+<div class="f"><span>✅ File Relations (10 types, visibility logic)</span></div>
+<div class="f"><span>✅ Visual Difference Mode (heatmap)</span></div>
+<div class="f"><span>✅ QListView virtualization (1M+ pairs)</span></div>
+<div class="f"><span>✅ Undoable commands + history</span></div>
+<div class="f"><span>✅ Vector index status tracking (per engine)</span></div>
+<div class="f"><span>✅ ChromaDB vector storage</span></div>
+<div class="f"><span>✅ DirectML GPU acceleration</span></div>
+<div class="f"><span>✅ Dark theme</span></div>
+<div class="f"><span>✅ DB maintenance (cleanup orphans, VACUUM)</span></div>
+
+<h2>WEB: Ecosystem</h2>
+<table><tr><th>Технология</th><th>Выбор</th><th>Альтернатива</th></tr>
+<tr><td>Desktop</td><td>PySide6</td><td>Tkinter, wxPython</td></tr>
+<tr><td>Hash matching</td><td>imagehash + BK-Tree</td><td>dhash, phash library, OpenCV</td></tr>
+<tr><td>Vector DB</td><td>chromadb</td><td>FAISS, Qdrant, Milvus</td></tr>
+<tr><td>AI engine</td><td>MobileNetV3</td><td>ResNet, EfficientNet, ViT</td></tr></table>
+
+<div class="footer"><a href="index.html">🏠 index.html</a> | 2026-05-26</div>
+</body></html>

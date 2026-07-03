@@ -1,0 +1,55 @@
+<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Шаг 8-14 — Audit, Research, Architecture, Critique, Knowledge, SWOT, Final</title><style>:root{--bg:#0d1117;--bg2:#161b22;--fg:#e6edf3;--fg2:#8b949e;--cyan:#58a6ff;--violet:#bc8cff;--green:#3fb950;--red:#f85149;--orange:#f0883e;--border:#30363d}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',monospace;background:var(--bg);color:var(--fg);padding:2rem;max-width:1200px;margin:0 auto}h1{background:linear-gradient(135deg,var(--cyan),var(--violet));-webkit-background-clip:text;-webkit-text-fill-color:transparent}h2{color:var(--cyan);border-bottom:1px solid var(--border)}table{width:100%;border-collapse:collapse;margin:1rem 0}th,td{padding:.5rem .8rem;border-bottom:1px solid var(--border);text-align:left}th{color:var(--fg2);font-size:.85rem;text-transform:uppercase}pre{background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1rem;color:var(--fg2);font-size:.85rem;overflow-x:auto}a{color:var(--cyan)}.footer{margin-top:3rem;color:var(--fg2);font-size:.85rem}.crosslinks{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:1rem;margin:1rem 0}.k{background:var(--bg2);border-left:3px solid var(--green);border-radius:0 6px 6px 0;padding:.5rem;margin:.3rem 0}.k h4{color:var(--green);margin:0}.swot{display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin:1rem 0}.swot>div{padding:1rem;border-radius:8px;border:1px solid var(--border)}.swot-s{background:#0b2d1b;border-color:var(--green)!important}.swot-w{background:#2d0b0b;border-color:var(--red)!important}.swot-o{background:#1b2d0b;border-color:var(--cyan)!important}.swot-t{background:#2d1b0b;border-color:var(--orange)!important}</style></head><body>
+<h1>Шаги 8-14 — Consolidated</h1>
+<div class="crosslinks"><a href="index.html">🏠 index.html</a></div>
+
+<h2>8. Docs Audit</h2>
+<p>README.md — детальный (101 line). PROJECT_STATE.md. docs/ папка с планами. Нет ROADMAP.md. Нет GAPS.md. 8 тестов (repositories + commands + verify).</p>
+
+<h2>9. Web Research</h2>
+<p>PySide6 6.11.1, imagehash 4.3, torch 2.6, chromadb 1.10. [WEB: PyPI 2026-05-26]. BK-Tree + MIH — проверенная техника для дедупликации.</p>
+
+<h2>10. Architecture</h2>
+<pre>┌───────────────────────────────────────────┐
+│             PRESENTATION                   │
+│  MainWindow │ ResultsView │ ClusterView    │
+│  ScanSetup │ ProgressView │ SettingsDialog │
+├───────────────────────────────────────────┤
+│              APPLICATION                   │
+│  Deduper (Facade) │ ScanSession            │
+│  CommandBus │ EventBus │ Scanner           │
+├───────────────────────────────────────────┤
+│              DOMAIN                        │
+│  Engines (pHash/AI/CLIP/BLIP)             │
+│  GraphBuilder │ ClusterReconciler          │
+│  BK-Tree │ VectorDB (ChromaDB)            │
+├───────────────────────────────────────────┤
+│              DATA                          │
+│  SQLite (WAL, MIH indexes) │ ChromaDB      │
+│  BK-Tree cache (pickle) │ Thumbnails      │
+└───────────────────────────────────────────┘</pre>
+
+<p><strong>Patterns:</strong> Facade (Deduper), Strategy (Engines), Command (UndoableCommand), Observer (EventBus), Service Locator (ServiceContainer), Repository (file_repo, cluster_repo), Singleton (ServiceContainer._instances), Iterator (chunked iteration), Proxy (BK-Tree cache).</p>
+
+<h2>11. Critique</h2>
+<p><strong>OQ1:</strong> Зачем self-join MIH если есть BK-Tree? Гипотеза: BK-Tree только для phash поиска, MIH для SQL batch.</p>
+<p><strong>OQ2:</strong> ChromaDB + SQLite — дублирование? Гипотеза: ChromaDB для векторов, SQLite для метаданных.</p>
+<p><strong>BS1:</strong> Нет тестов для AI engines (MobileNet/CLIP/BLIP)</p>
+<p><strong>BS2:</strong> GPU fallback не тестируется (DirectML)</p>
+
+<h2>12. Knowledge</h2>
+<div class="k"><h4>MIH (Multi-Index Hashing)</h4>64-bit hash → 4×16-bit chunks → SQL self-join на любой chunk → ~256x ускорение vs brute force</div>
+<div class="k"><h4>BK-Tree + pickle cache</h4>BK-Tree строится в памяти, кешируется в bktree_cache.pkl. Hamming distance query O(log n)</div>
+<div class="k"><h4>Reconciliation после скана</h4>Deduper проверяет каждую новую пару против БД. Если уже annotated — обновляет статус, не создаёт дубликат NEW_MATCH</div>
+
+<h2>13. SWOT</h2>
+<div class="swot">
+<div class="swot-s"><h4>✅ Strengths</h4>4 matching engines, MIH, BK-Tree, Sticky Clusters, Undo/redo, Virtualization 1M+</div>
+<div class="swot-w"><h4>❌ Weaknesses</h4>Нет тестов AI engines, ChromaDB dependency, SQLite не distributed, Нет CI/CD</div>
+<div class="swot-o"><h4>🔮 Opportunities</h4>Docker, CLI mode, REST API, Web UI, Plugin system for engines</div>
+<div class="swot-t"><h4>⚠️ Threats</h4>Torch размер, ChromaDB breaking changes, PySide6 лицензия</div>
+</div>
+
+<h2>14. Final</h2>
+<p>Pass 1 завершён. Все 14 артефактов: <a href="index.html">index.html</a></p>
+<div class="footer">2026-05-26 | Pass 1</div>
+</body></html>

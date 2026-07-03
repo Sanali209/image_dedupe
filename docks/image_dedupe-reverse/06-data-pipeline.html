@@ -1,0 +1,54 @@
+<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Шаг 6/14 — Data Pipeline</title><style>:root{--bg:#0d1117;--bg2:#161b22;--fg:#e6edf3;--fg2:#8b949e;--cyan:#58a6ff;--violet:#bc8cff;--orange:#f0883e;--border:#30363d}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',monospace;background:var(--bg);color:var(--fg);padding:2rem;max-width:1200px;margin:0 auto}h1{background:linear-gradient(135deg,var(--cyan),var(--violet));-webkit-background-clip:text;-webkit-text-fill-color:transparent}h2{color:var(--cyan);border-bottom:1px solid var(--border)}pre{background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1rem;color:var(--fg2);font-size:.85rem;overflow-x:auto}a{color:var(--cyan)}.footer{margin-top:3rem;color:var(--fg2);font-size:.85rem}.crosslinks{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:1rem;margin:1rem 0}.stage{background:var(--bg2);border-left:3px solid var(--orange);border-radius:0 6px 6px 0;padding:.6rem;margin:.4rem 0}</style></head><body>
+<h1>Шаг 6/14 — Data Pipeline</h1>
+<div class="crosslinks"><a href="index.html">🏠 index.html</a></div>
+
+<h2>Pass 2: ScanWorker Pipeline (3 этапа)</h2>
+<pre>1. DISCOVERY: ScanWorker.run() → os.walk(root) → filter extensions (.png,.jpg,.jpeg,.bmp,.gif,.webp) → List[paths]
+                      ↓ progress.emit(0, total)
+2. INDEXING: Deduper.engine.index_files(files) → phash/AI extract → DB upsert_batch(5000)
+                      ↓ ThrottledSignal(100ms) → progress.emit(current, total)
+3. MATCHING: Deduper.find_duplicates(threshold, roots) → MIH self-join → Hamming filter
+                      ↓ scan_results_ready.emit(results)
+   RECONCILE: Deduper проверяет каждую пару против file_relations в БД → обновляет статус
+                      ↓ ResultsView (QListView virtual)</pre>
+
+<h2>pHash Pipeline</h2>
+<pre>Filesystem → Scanner → SQLite (files table)
+                           │
+                    Extract phash (imagehash)
+                           │
+                    Store 4×16-bit chunks (MIH)
+                           │
+                    BK-Tree build (in-memory, pickled cache)
+                           │
+                    SQL self-join: f1.phash_cN = f2.phash_cN
+                           │
+                    Candidate pairs → Hamming distance filter
+                           │
+                    FileRelation(NEW_MATCH) → DB
+                           │
+                    Deduper.reconcile() → update from existing annotations
+                           │
+                    ResultsView (QListView virtual)</pre>
+
+<h2>AI Pipeline (MobileNet/CLIP/BLIP)</h2>
+<pre>Filesystem → Scanner → SQLite
+                           │
+                    ChromaDB embedding (per engine)
+                           │
+                    vector_index_status tracking
+                           │
+                    Cosine similarity search
+                           │
+                    Threshold filter → FileRelation(NEW_MATCH)
+                           │
+                    Persist + Reconcile → UI</pre>
+
+<h2>Cluster Pipeline</h2>
+<div class="stage"><h4>GraphBuilder.build_graph_and_find_components()</h4>
+<p>Loads file_relations from DB → Builds adjacency graph → Finds connected components → Each component = potential cluster</p></div>
+<div class="stage"><h4>ClusterReconciler.reconcile()</h4>
+<p>Merges fresh graph components with existing sticky clusters (ID-based). Removes duplicates. Returns final clusters.</p></div>
+
+<div class="footer"><a href="index.html">🏠 index.html</a> | 2026-05-26</div>
+</body></html>
